@@ -23,6 +23,8 @@
 int device_ir;
 int device_mtr;
 
+int bar_detected_flag = 0;
+
 // ? Line-following State Machine
 typedef enum
 {
@@ -405,7 +407,19 @@ void mtr_ctrl(void *args)
             break;
         case FULL_DETECTED:
             // Start Point & Stop Point Sign, deciding whether start or stop
-            stopMotors();
+            if (bar_detected_flag == 0)
+            {
+                moveForwardFast();
+            }
+            else if (bar_detected_flag == 1)
+            {
+                stopMotors();
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Bar Detected Flag too large index!");
+            }
+            
             break;
         default:
             // Default action
