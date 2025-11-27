@@ -13,9 +13,11 @@ typedef enum
 } ControlMode;
 
 typedef struct
-{
-    uint16_t x_value;
-    uint16_t y_value;
+{                               // Unit
+    uint16_t x_value;           // cm/s/DefinedValue.
+    uint16_t y_value;           // cm/s/DefinedValue.
+    uint16_t lifting_arm_value; // rad/s/DefinedValue.
+    uint16_t mclaw_switch;      // 0/1 (Close/Open)
 } TabletData;
 
 extern volatile TabletData tablet_data;

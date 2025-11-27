@@ -21,6 +21,16 @@
 #define MTR_BL_PWM GPIO_NUM_12 /*!< Back-Left Motor*/
 #define MTR_BR_PWM GPIO_NUM_13 /*!< Back-Right Motor*/
 
+#define ARM_LIFT_PWM GPIO_NUM_4 /*!< Lifting Arm Motor*/
+#define CLAW_SW_PWM GPIO_NUM_5 /*!< Mechanical Claw Motor*/
+
+#define SERVO_FREQ_HZ 50
+#define SERVO_PERIOD_US (1000000 / SERVO_FREQ_HZ)
+#define SERVO_MIN_PULSE_US 500
+#define SERVO_MAX_PULSE_US 2500
+#define SERVO_FULL_RANGE_DEG 270
+#define CLAW_OPEN_DEG 75
+
 #define MTR_FULL_SPD 8192
 #define MTR_TURN_SPD 4096
 #define MTR_SLOW_SPD 2048
@@ -64,6 +74,16 @@ typedef struct
 
 volatile IRData current_ir_data;
 volatile IRState current_ir_state = NONE;
+
+static uint16_t servo_duty_from_pulse_us(uint32_t pulse_us)
+{
+    uint32_t duty = (pulse_us * MTR_FULL_SPD) / SERVO_PERIOD_US;
+    if (duty > MTR_FULL_SPD)
+    {
+        duty = MTR_FULL_SPD;
+    }
+    return (uint16_t)duty;
+}
 
 // ! Tablet Data Handler
 void tablet_data_handler(TabletData data);
@@ -124,6 +144,16 @@ void app_main(void)
     };
     ledc_timer_config(&pwm_timer);
 
+    // * Dedicated servo timer for GPIO4 (Lifting Arm)
+    ledc_timer_config_t servo_timer = {
+        .speed_mode = LEDC_SPEED_MODE_MAX,
+        .timer_num = LEDC_TIMER_1,
+        .duty_resolution = LEDC_TIMER_13_BIT,
+        .freq_hz = SERVO_FREQ_HZ,
+        .clk_cfg = LEDC_AUTO_CLK,
+    };
+    ledc_timer_config(&servo_timer);
+
     // * PWM Channel Configuration
     ledc_channel_config_t mtr_fl_channel = {
         .speed_mode = LEDC_SPEED_MODE_MAX,
@@ -166,11 +196,37 @@ void app_main(void)
     ledc_channel_config(&mtr_bl_channel);
     ledc_channel_config(&mtr_br_channel);
 
+    // * PWM Channel Configuration for Lifting Arm
+    ledc_channel_config_t arm_lift_channel = {
+        .speed_mode = LEDC_SPEED_MODE_MAX,
+        .channel = LEDC_CHANNEL_4,
+        .timer_sel = LEDC_TIMER_1,
+        .intr_type = LEDC_INTR_DISABLE,
+        .gpio_num = ARM_LIFT_PWM,
+        .duty = 0,
+        .hpoint = 0,
+    };
+    ledc_channel_config(&arm_lift_channel);
+
+    // * PWM Channel Configuration for Mechanical Claw
+    ledc_channel_config_t claw_sw_channel = {
+        .speed_mode = LEDC_SPEED_MODE_MAX,
+        .channel = LEDC_CHANNEL_5,
+        .timer_sel = LEDC_TIMER_1,
+        .intr_type = LEDC_INTR_DISABLE,
+        .gpio_num = CLAW_SW_PWM,
+        .duty = 0,
+        .hpoint = 0,
+    };
+    ledc_channel_config(&claw_sw_channel);
+
+    // ? BLE Handler START
     // * NimBLE initialization
     nimble_init();
 
-    // * 注册蓝牙数据回调函数
+    // * Bluetooth Callback Registration
     gatt_service_register_callback(tablet_data_handler);
+    // ? BLE Handler END
 
     // * Motor Control Thread
     xTaskCreate(mtr_ctrl, "Motor Control Task", 2048, NULL, 3, NULL);
@@ -475,8 +531,10 @@ void mtr_ctrl(void *args)
 // ! Tablet Data Callback Handler
 void tablet_data_handler(TabletData data)
 {
-    ESP_LOGI(TAG, "Tablet Data Received - X: %u, Y: %u", data.x_value, data.y_value);
+    ESP_LOGI(TAG, "X: %u, Y: %u, Lifting: %u, mclawSw: %u",
+             data.x_value, data.y_value, data.lifting_arm_value, data.mclaw_switch);
 
+    // ? Manual Control Mode Movement START
     // * Map tablet data to motor controls
     // * X: 0x0000(Backward) <- 0x7F(Center) -> 0xFF(Forward)
     // * Y: 0x0000(Left) <- 0x7F(Center) -> 0xFF(Right)
@@ -606,4 +664,35 @@ void tablet_data_handler(TabletData data)
     ledc_update_duty(LEDC_SPEED_MODE_MAX, LEDC_CHANNEL_2);
     ledc_set_duty(LEDC_SPEED_MODE_MAX, LEDC_CHANNEL_3, br_speed); // * Back-Right Motor
     ledc_update_duty(LEDC_SPEED_MODE_MAX, LEDC_CHANNEL_3);
+    // ? Manual Control Mode Movement END
+
+    // ? Lifting Arm Speed Control START
+    uint16_t lifting_raw = data.lifting_arm_value;
+    const uint16_t lifting_max_input = 225;
+    if (lifting_raw > lifting_max_input)
+    {
+        lifting_raw = lifting_max_input;
+    }
+    uint32_t pulse_range = SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US;
+    uint32_t pulse_us = SERVO_MIN_PULSE_US + ((uint32_t)lifting_raw * pulse_range) / lifting_max_input;
+    uint16_t lift_duty = servo_duty_from_pulse_us(pulse_us);
+
+    ledc_set_duty(LEDC_SPEED_MODE_MAX, LEDC_CHANNEL_4, lift_duty);
+    ledc_update_duty(LEDC_SPEED_MODE_MAX, LEDC_CHANNEL_4);
+    // ? Lifting Arm Speed Control END
+
+    // ? Mechanical Claw Control START
+    uint8_t claw_switch = data.mclaw_switch;
+    uint16_t claw_target_deg = claw_switch ? CLAW_OPEN_DEG : 0;
+    if (claw_target_deg > SERVO_FULL_RANGE_DEG)
+    {
+        claw_target_deg = SERVO_FULL_RANGE_DEG;
+    }
+    uint32_t claw_pulse_range = SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US;
+    uint32_t claw_pulse_us = SERVO_MIN_PULSE_US + ((uint32_t)claw_target_deg * claw_pulse_range) / SERVO_FULL_RANGE_DEG;
+    uint16_t claw_duty = servo_duty_from_pulse_us(claw_pulse_us);
+
+    ledc_set_duty(LEDC_SPEED_MODE_MAX, LEDC_CHANNEL_5, claw_duty);
+    ledc_update_duty(LEDC_SPEED_MODE_MAX, LEDC_CHANNEL_5);
+    // ? Mechanical Claw Control END
 }

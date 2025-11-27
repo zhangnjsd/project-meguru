@@ -5,7 +5,13 @@
 #define TAG "GATT_SERVICE"
 #endif
 
-volatile TabletData tablet_data = {0, 0};
+// * Initial Tablet Data
+volatile TabletData tablet_data = {
+    0x7F,   // * X-Axis Speed
+    0x7F,   // * Y-Axis Speed
+    0x7F,   // * Lifting Arm Speed
+    0       // * Mechanical Claw Switch
+};
 static tablet_data_callback_t data_callback = NULL;
 
 /* Event Callback for tablet */
@@ -24,6 +30,16 @@ static int controller_usable_cb(
     uint16_t attr_handle,
     struct ble_gatt_access_ctxt *ctxt,
     void *arg);
+static int lifting_arm_cb(
+    uint16_t conn_handle,
+    uint16_t attr_handle,
+    struct ble_gatt_access_ctxt *ctxt,
+    void *arg);
+static int mclaw_switch_cb(
+    uint16_t conn_handle,
+    uint16_t attr_handle,
+    struct ble_gatt_access_ctxt *ctxt,
+    void *arg);
 
 /* GATT service UUID define */
 static const ble_uuid128_t tablet_service_uuid = BLE_UUID128_INIT(0xA1, 0xC6, 0xE6, 0xD4, 0x11, 0x45, 0x19, 0x19,
@@ -34,31 +50,49 @@ static const ble_uuid128_t y_characteristic_uuid = BLE_UUID128_INIT(0xD3, 0x09, 
                                                                      0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
 static const ble_uuid128_t controller_usable_characteristic_uuid = BLE_UUID128_INIT(0xE7, 0xA1, 0xC2, 0xB3, 0x11, 0x45, 0x19, 0x19,
                                                                                      0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
+static const ble_uuid128_t lifting_arm_characteristic_uuid = BLE_UUID128_INIT(0xA7, 0xA9, 0xD7, 0xE3, 0x11, 0x45, 0x19, 0x19,
+                                                                                     0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
+static const ble_uuid128_t mclaw_switch_characteristic_uuid = BLE_UUID128_INIT(0xE2, 0xD3, 0xD4, 0xC4, 0x11, 0x45, 0x19, 0x19,
+                                                                                     0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
 
 /* Characters value handler */
 static uint16_t x_handler;
 static uint16_t y_handler;
 static uint16_t controller_usable_handler;
+static uint16_t lifting_arm_handler;
+static uint16_t mclaw_switch_handler;
 
 /* Characters define */
 static struct ble_gatt_chr_def tablet_chr[] = {
     {
         .uuid = &x_characteristic_uuid.u,
-        .access_cb = x_cb, // Define your access callback function here
+        .access_cb = x_cb,
         .flags = BLE_GATT_CHR_F_WRITE,
         .val_handle = &x_handler,
     },
     {
         .uuid = &y_characteristic_uuid.u,
-        .access_cb = y_cb, // Define your access callback function here
+        .access_cb = y_cb,
         .flags = BLE_GATT_CHR_F_WRITE,
         .val_handle = &y_handler,
     },
     {
         .uuid = &controller_usable_characteristic_uuid.u,
-        .access_cb = controller_usable_cb, // Define your access callback function here
+        .access_cb = controller_usable_cb,
         .flags = BLE_GATT_CHR_F_READ,
         .val_handle = &controller_usable_handler,
+    },
+    {
+        .uuid = &lifting_arm_characteristic_uuid.u,
+        .access_cb = lifting_arm_cb,
+        .flags = BLE_GATT_CHR_F_WRITE,
+        .val_handle = &lifting_arm_handler,
+    },
+    {
+        .uuid = &mclaw_switch_characteristic_uuid.u,
+        .access_cb = mclaw_switch_cb,
+        .flags = BLE_GATT_CHR_F_WRITE,
+        .val_handle = &mclaw_switch_handler,
     },
     {
         0 // End of characteristics
@@ -78,6 +112,8 @@ const struct ble_gatt_svc_def gatt_service_table[] = {
 };
 
 /* Access Callback */
+// ? Global Callback START
+// ! X-Axis Speed Callback
 static int x_cb(
     uint16_t conn_handle,
     uint16_t attr_handle,
@@ -90,21 +126,16 @@ static int x_cb(
         /* Verify attribute handle */
         if (attr_handle == x_handler)
         {
-            /* 获取接收到的数据长度 */
             uint16_t data_len = OS_MBUF_PKTLEN(ctxt->om);
             
-            /* 确保有足够的数据 */
             if (data_len >= 2)
             {
-                /* 从缓冲区读取2字节的数据 (16位) */
                 uint16_t x_val = (ctxt->om->om_data[0] << 8) | ctxt->om->om_data[1];
                 
-                /* 更新全局数据结构 */
                 tablet_data.x_value = x_val;
                 
                 ESP_LOGI(TAG, "Received X value: %u", x_val);
                 
-                /* 调用回调函数通知应用层 */
                 if (data_callback != NULL)
                 {
                     data_callback(tablet_data);
@@ -129,6 +160,7 @@ static int x_cb(
     }
     return 0;
 }
+// ! Y-Axis Speed Callback
 static int y_cb(
     uint16_t conn_handle,
     uint16_t attr_handle,
@@ -141,21 +173,16 @@ static int y_cb(
         /* Verify attribute handle */
         if (attr_handle == y_handler)
         {
-            /* 获取接收到的数据长度 */
             uint16_t data_len = OS_MBUF_PKTLEN(ctxt->om);
             
-            /* 确保有足够的数据 */
             if (data_len >= 2)
             {
-                /* 从缓冲区读取2字节的数据 (16位) */
                 uint16_t y_val = (ctxt->om->om_data[0] << 8) | ctxt->om->om_data[1];
                 
-                /* 更新全局数据结构 */
                 tablet_data.y_value = y_val;
                 
                 ESP_LOGI(TAG, "Received Y value: %u", y_val);
                 
-                /* 调用回调函数通知应用层 */
                 if (data_callback != NULL)
                 {
                     data_callback(tablet_data);
@@ -180,6 +207,7 @@ static int y_cb(
     }
     return 0;
 }
+// ! Controller Usable Status Callback
 static int controller_usable_cb(
     uint16_t conn_handle,
     uint16_t attr_handle,
@@ -221,6 +249,101 @@ static int controller_usable_cb(
     }
     return 0;
 }
+// ! Lifting Arm Up~Down Speed Callback
+static int lifting_arm_cb(
+    uint16_t conn_handle,
+    uint16_t attr_handle,
+    struct ble_gatt_access_ctxt *ctxt,
+    void *arg)
+{
+    switch (ctxt->op)
+    {
+    case BLE_GATT_ACCESS_OP_WRITE_CHR:
+        /* Verify attribute handle */
+        if (attr_handle == lifting_arm_handler)
+        {
+            uint16_t data_len = OS_MBUF_PKTLEN(ctxt->om);
+
+            if (data_len >= 2)
+            {
+                uint16_t lifting_val = (ctxt->om->om_data[0] << 8) | ctxt->om->om_data[1];
+
+                tablet_data.lifting_arm_value = lifting_val;
+
+                ESP_LOGI(TAG, "Received Lifting attitude value: %u", lifting_val);
+
+                if (data_callback != NULL)
+                {
+                    data_callback(tablet_data);
+                }
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Lifting attitude length too short: %d", data_len);
+            }
+        }
+        else
+        {
+            ESP_LOGE(TAG,
+                     "Write request for unknown attribute handle: %d",
+                     attr_handle);
+        }
+        break;
+
+    default:
+        ESP_LOGE(TAG, "Unknown GATT operation: %d", ctxt->op);
+        break;
+    }
+    return 0;
+}
+// ! Mechanical Claw Switch Callback
+static int mclaw_switch_cb(
+    uint16_t conn_handle,
+    uint16_t attr_handle,
+    struct ble_gatt_access_ctxt *ctxt,
+    void *arg)
+{
+    switch (ctxt->op)
+    {
+    case BLE_GATT_ACCESS_OP_WRITE_CHR:
+        /* Verify attribute handle */
+        if (attr_handle == lifting_arm_handler)
+        {
+            uint16_t data_len = OS_MBUF_PKTLEN(ctxt->om);
+
+            if (data_len >= 2)
+            {
+                uint16_t lifting_val = (ctxt->om->om_data[0] << 8) | ctxt->om->om_data[1];
+
+                tablet_data.lifting_arm_value = lifting_val;
+
+                ESP_LOGI(TAG, "Received Mechanical Claw Switch value: %u", lifting_val);
+
+                if (data_callback != NULL)
+                {
+                    data_callback(tablet_data);
+                }
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Mechanical Claw Switch length too short: %d", data_len);
+            }
+        }
+        else
+        {
+            ESP_LOGE(TAG,
+                     "Write request for unknown attribute handle: %d",
+                     attr_handle);
+        }
+        break;
+
+    default:
+        ESP_LOGE(TAG, "Unknown GATT operation: %d", ctxt->op);
+        break;
+    }
+    return 0;
+}
+// ? Global Callback END
 
 esp_err_t gatt_service_init(void)
 {

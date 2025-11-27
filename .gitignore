@@ -42,3 +42,6 @@ sdkconfig.old
 *.bin
 *.elf
 *.map
+
+# Trunk
+.trunk/
