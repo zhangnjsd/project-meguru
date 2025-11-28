@@ -24,17 +24,17 @@
 #define ARM_LIFT_PWM GPIO_NUM_4 /*!< Lifting Arm Motor*/
 #define CLAW_SW_PWM GPIO_NUM_5 /*!< Mechanical Claw Motor*/
 
-#define SERVO_FREQ_HZ 50
-#define SERVO_PERIOD_US (1000000 / SERVO_FREQ_HZ)
-#define SERVO_MIN_PULSE_US 500
-#define SERVO_MAX_PULSE_US 2500
-#define SERVO_FULL_RANGE_DEG 270
-#define CLAW_OPEN_DEG 75
+#define SERVO_FREQ_HZ 50 /*!< Servo Frequency 50Hz */
+#define SERVO_PERIOD_US (1000000 / SERVO_FREQ_HZ) /*!< Servo Period in microseconds */
+#define SERVO_MIN_PULSE_US 500 /*!< Servo Minimum Pulse Width in microseconds */
+#define SERVO_MAX_PULSE_US 2500 /*!< Servo Maximum Pulse Width in microseconds */
+#define SERVO_FULL_RANGE_DEG 270 /*!< Servo Full Range in degrees */
+#define CLAW_OPEN_DEG 75  /*!< Claw Open Position in degrees */
 
-#define MTR_FULL_SPD 8192
-#define MTR_TURN_SPD 4096
-#define MTR_SLOW_SPD 2048
-#define MTR_STOP 0
+#define MTR_FULL_SPD 8192 /*!< Full Speed Duty Cycle */
+#define MTR_TURN_SPD 4096 /*!< Turn Speed Duty Cycle */
+#define MTR_SLOW_SPD 2048 /*!< Slow Speed Duty Cycle */
+#define MTR_STOP 0 /*!< Stop Duty Cycle */
 
 int device_ir;
 int device_mtr;
@@ -666,7 +666,7 @@ void tablet_data_handler(TabletData data)
     ledc_update_duty(LEDC_SPEED_MODE_MAX, LEDC_CHANNEL_3);
     // ? Manual Control Mode Movement END
 
-    // ? Lifting Arm Speed Control START
+    // ? Lifting Arm Control START
     uint16_t lifting_raw = data.lifting_arm_value;
     const uint16_t lifting_max_input = 225;
     if (lifting_raw > lifting_max_input)
@@ -679,7 +679,7 @@ void tablet_data_handler(TabletData data)
 
     ledc_set_duty(LEDC_SPEED_MODE_MAX, LEDC_CHANNEL_4, lift_duty);
     ledc_update_duty(LEDC_SPEED_MODE_MAX, LEDC_CHANNEL_4);
-    // ? Lifting Arm Speed Control END
+    // ? Lifting Arm Control END
 
     // ? Mechanical Claw Control START
     uint8_t claw_switch = data.mclaw_switch;

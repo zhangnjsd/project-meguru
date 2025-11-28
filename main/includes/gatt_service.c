@@ -7,10 +7,10 @@
 
 // * Initial Tablet Data
 volatile TabletData tablet_data = {
-    0x7F,   // * X-Axis Speed
-    0x7F,   // * Y-Axis Speed
-    0x7F,   // * Lifting Arm Speed
-    0       // * Mechanical Claw Switch
+    0x7F,   // * X-Axis Speed (0x00~0x7F~0xFF)
+    0x7F,   // * Y-Axis Speed (0x00~0x7F~0xFF)
+    0,      // * Lifting Arm Position (0x00~0xFF)
+    0       // * Mechanical Claw Switch (0x00/0x01)
 };
 static tablet_data_callback_t data_callback = NULL;
 
