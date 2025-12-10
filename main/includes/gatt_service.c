@@ -9,6 +9,7 @@
 volatile TabletData tablet_data = {
     0x7F,   // * X-Axis Speed (0x00~0x7F~0xFF)
     0x7F,   // * Y-Axis Speed (0x00~0x7F~0xFF)
+    0x7F,   // * Rotation Speed (0x00~0x7F~0xFF)
     0,      // * Lifting Arm Position (0x00~0xFF)
     0       // * Mechanical Claw Switch (0x00/0x01)
 };
@@ -21,6 +22,11 @@ static int x_cb(
     struct ble_gatt_access_ctxt *ctxt,
     void *arg);
 static int y_cb(
+    uint16_t conn_handle,
+    uint16_t attr_handle,
+    struct ble_gatt_access_ctxt *ctxt,
+    void *arg);
+static int r_cb(
     uint16_t conn_handle,
     uint16_t attr_handle,
     struct ble_gatt_access_ctxt *ctxt,
@@ -42,11 +48,15 @@ static int mclaw_switch_cb(
     void *arg);
 
 /* GATT service UUID define */
+// ? --- Main Service --------------------------------------------------------------------------------------------------------------------
 static const ble_uuid128_t tablet_service_uuid = BLE_UUID128_INIT(0xA1, 0xC6, 0xE6, 0xD4, 0x11, 0x45, 0x19, 0x19,
                                                                    0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
+// ? --- Subcharacteristics --------------------------------------------------------------------------------------------------------------
 static const ble_uuid128_t x_characteristic_uuid = BLE_UUID128_INIT(0x05, 0x91, 0xB3, 0x6B, 0x11, 0x45, 0x19, 0x19,
                                                                      0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
 static const ble_uuid128_t y_characteristic_uuid = BLE_UUID128_INIT(0xD3, 0x09, 0xD1, 0x5D, 0x11, 0x45, 0x19, 0x19,
+                                                                     0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
+static const ble_uuid128_t r_characteristic_uuid = BLE_UUID128_INIT(0xF4, 0x2E, 0xC5, 0x4E, 0x11, 0x45, 0x19, 0x19,
                                                                      0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
 static const ble_uuid128_t controller_usable_characteristic_uuid = BLE_UUID128_INIT(0xE7, 0xA1, 0xC2, 0xB3, 0x11, 0x45, 0x19, 0x19,
                                                                                      0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
@@ -58,6 +68,7 @@ static const ble_uuid128_t mclaw_switch_characteristic_uuid = BLE_UUID128_INIT(0
 /* Characters value handler */
 static uint16_t x_handler;
 static uint16_t y_handler;
+static uint16_t r_handler;
 static uint16_t controller_usable_handler;
 static uint16_t lifting_arm_handler;
 static uint16_t mclaw_switch_handler;
@@ -75,6 +86,12 @@ static struct ble_gatt_chr_def tablet_chr[] = {
         .access_cb = y_cb,
         .flags = BLE_GATT_CHR_F_WRITE,
         .val_handle = &y_handler,
+    },
+    {
+        .uuid = &r_characteristic_uuid.u,
+        .access_cb = r_cb,
+        .flags = BLE_GATT_CHR_F_WRITE,
+        .val_handle = &r_handler,
     },
     {
         .uuid = &controller_usable_characteristic_uuid.u,
@@ -205,6 +222,60 @@ static int y_cb(
             else
             {
                 ESP_LOGW(TAG, "Y data length too short: %d", data_len);
+            }
+        }
+        else
+        {
+            ESP_LOGE(TAG,
+                     "Write request for unknown attribute handle: %d",
+                     attr_handle);
+        }
+        break;
+
+    default:
+        ESP_LOGE(TAG, "Unknown GATT operation: %d", ctxt->op);
+        break;
+    }
+    return 0;
+}
+// ! Rotation Speed Callback
+static int r_cb(
+    uint16_t conn_handle,
+    uint16_t attr_handle,
+    struct ble_gatt_access_ctxt *ctxt,
+    void *arg)
+{
+    switch (ctxt->op)
+    {
+    case BLE_GATT_ACCESS_OP_WRITE_CHR:
+        /* Verify attribute handle */
+        if (attr_handle == r_handler)
+        {
+            uint16_t data_len = OS_MBUF_PKTLEN(ctxt->om);
+            
+            // Debug: Print raw bytes received
+            ESP_LOGI(TAG, "R Raw data len=%d, bytes: [0x%02X, 0x%02X]", 
+                     data_len,
+                     data_len >= 1 ? ctxt->om->om_data[0] : 0,
+                     data_len >= 2 ? ctxt->om->om_data[1] : 0);
+            
+            if (data_len >= 2)
+            {
+                // Little-endian: low byte first, high byte second
+                uint16_t r_val = ctxt->om->om_data[0] | (ctxt->om->om_data[1] << 8);
+                
+                tablet_data.r_value = r_val;
+                
+                ESP_LOGI(TAG, "Received R value: %u (0x%04X)", r_val, r_val);
+                
+                if (data_callback != NULL)
+                {
+                    data_callback(tablet_data);
+                }
+            }
+            else
+            {
+                ESP_LOGW(TAG, "R data length too short: %d", data_len);
             }
         }
         else

@@ -16,6 +16,7 @@ typedef struct
 {                               // Unit
     uint16_t x_value;           // cm/s/DefinedValue.
     uint16_t y_value;           // cm/s/DefinedValue.
+    uint16_t r_value;           // rad/s/DefinedValue.
     uint16_t lifting_arm_value; // rad/s/DefinedValue.
     uint16_t mclaw_switch;      // 0/1 (Close/Open)
 } TabletData;

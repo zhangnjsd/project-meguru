@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "driver/ledc.h"
+#include <math.h>
 
 #include "includes/nimble.h"
 #include "includes/gap_config.h"
@@ -94,6 +95,42 @@ typedef struct
     bool RRR;
 } IRData;
 
+// ? Motor Data
+/*
+!!! Mecanum Wheel Basic Motion Chart
+!----------------------------------------------------------------------------------------------------------------------------------------------------------------!
+? Motion Pattern            |   Wheel Rotation Relationship                                                                         | Arrow Direction in Diagram
+!----------------------------------------------------------------------------------------------------------------------------------------------------------------!
+* Forward                   |   Four wheels rotate forward at the same speed                                                        | →
+* Backward                  |   Four wheels rotate in opposite directions at the same speed                                         | ←
+* Right Translation         |   Left front/right rear wheel rotates forward, right front/left rear wheel rotates counter-clockwise  | →←
+* Left Translation          |   Right front/left rear wheel rotates forward, left front/right rear wheel rotates counter-clockwise  | ←→
+* Spot Rotation (Forward)   |   Left wheel rotates counter-clockwise, right wheel rotates forward                                   | ↻
+* Spot Reverse Rotation     |   Right wheel rotates counter-clockwise, left wheel rotates forward                                   | ↺
+!----------------------------------------------------------------------------------------------------------------------------------------------------------------!
+*/
+// * Motor Property
+typedef struct 
+{
+    ledc_channel_t pwm_channel;
+    uint16_t speed;
+    gpio_num_t in1_pin;
+    gpio_num_t in2_pin;
+    uint8_t in1_level;
+    uint8_t in2_level;
+} Motor;
+// * General Structure
+typedef struct
+{
+    Motor FrontL;
+    Motor FrontR;
+    Motor BackL;
+    Motor BackR;
+    float vx; // Velocity in X direction (cm/s)
+    float vy; // Velocity in Y direction (cm/s)
+    float vr; // Rotational Velocity (rad/s)
+} MotorGroup;
+
 volatile IRData current_ir_data;
 volatile IRState current_ir_state = NONE;
 
@@ -120,6 +157,9 @@ void ir_read_callback(uint8_t state_buf[0]);
 // ! IR Module Read Task
 void ir_read_task();
 
+// ? Mecanum Wheel Movement Function
+static void mecanum_move(MotorGroup* motor, float mag);
+
 // ? IR Init
 static esp_err_t i2c_bus_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_handle_t *dev_handle);
 
@@ -127,7 +167,7 @@ static esp_err_t i2c_bus_init(i2c_master_bus_handle_t *bus_handle, i2c_master_de
 static esp_err_t read_sensor_registers(i2c_master_dev_handle_t dev_handle, uint8_t reg_addr, uint8_t *buffer, size_t length);
 
 // ! Motor Control based on IR State
-void mtr_ctrl(void *args);
+void mtr_ctrl_ir(void *args);
 
 void app_main(void)
 {
@@ -146,23 +186,6 @@ void app_main(void)
     // Initialize I2C bus once (shared by IR sensor + 9555 expander)
     ESP_ERROR_CHECK(i2c_bus_init(&shared_i2c_bus, &ir_dev_handle));
     ESP_ERROR_CHECK(i2c9555_attach_bus(shared_i2c_bus));
-
-    /*
-    // * Initialize IR_Module via 9555
-    device_ir = i2c9555_add_device(SDA_PIN, SCL_PIN, 0x20, GPIO_NUM_39, ir_read_callback);
-    */
-    /*  IR Module Pin Configuration
-        Pin     Functions       State
-        00      IR_LL           Input
-        01      IR_LF           Input
-        02      IR_FL           Input
-        03      IR_FR           Input
-        04      IR_RF           Input
-        05      IR_RR           Input
-    */
-    /*
-    i2c9555_ioconfig(device_ir, 0xFFFF);
-    */
 
     // * Initialize Motor Controller via 9555
     device_mtr = i2c9555_add_device(SDA_PIN, SCL_PIN, I2C_9555_ADDRESS, GPIO_NUM_NC, NULL);
@@ -286,7 +309,84 @@ void app_main(void)
     // * Motor Control Thread
     ESP_LOGI(TAG, "Starting Motor Control Task");
     // Increase stack to accommodate motor control logic and logging
-    xTaskCreate(mtr_ctrl, "Motor Control Task", 4096, NULL, 3, NULL);
+    xTaskCreate(mtr_ctrl_ir, "Motor Control Task", 4096, NULL, 3, NULL);
+}
+
+// ? Define Motor Group
+volatile MotorGroup mecanum = {
+    .FrontL = {
+        .in1_pin = EXT_IO0,
+        .in2_pin = EXT_IO1,
+        .pwm_channel = LEDC_CHANNEL_0,
+        .speed = 0,
+        .in1_level = 0,
+        .in2_level = 0,
+    },
+    .FrontR = {
+        .in1_pin = EXT_IO2,
+        .in2_pin = EXT_IO3,
+        .pwm_channel = LEDC_CHANNEL_1,
+        .speed = 0,
+        .in1_level = 0,
+        .in2_level = 0,
+    },
+    .BackL = {
+        .in1_pin = EXT_IO4,
+        .in2_pin = EXT_IO5,
+        .pwm_channel = LEDC_CHANNEL_2,
+        .speed = 0,
+        .in1_level = 0,
+        .in2_level = 0,
+    },
+    .BackR = {
+        .in1_pin = EXT_IO6,
+        .in2_pin = EXT_IO7,
+        .pwm_channel = LEDC_CHANNEL_3,
+        .speed = 0,
+        .in1_level = 0,
+        .in2_level = 0,
+    },
+    .vx = 0.0f,
+    .vy = 0.0f,
+    .vr = 0.0f,
+};
+
+// ? Motor Controller
+esp_err_t mtr_spd_setting(MotorGroup* motor) {
+    // ERROR?
+    esp_err_t err;
+
+    // * FL
+    err = i2c9555pin_write(device_mtr, motor->FrontL.in1_pin, motor->FrontL.in1_level);
+    err = i2c9555pin_write(device_mtr, motor->FrontL.in2_pin, motor->FrontL.in2_level);
+    err = ledc_set_duty(LEDC_LOW_SPEED_MODE, motor->FrontL.pwm_channel, motor->FrontL.speed);
+    err = ledc_update_duty(LEDC_LOW_SPEED_MODE, motor->FrontL.pwm_channel);
+
+    // * FR
+    err = i2c9555pin_write(device_mtr, motor->FrontR.in1_pin, motor->FrontR.in1_level);
+    err = i2c9555pin_write(device_mtr, motor->FrontR.in2_pin, motor->FrontR.in2_level);
+    err = ledc_set_duty(LEDC_LOW_SPEED_MODE, motor->FrontR.pwm_channel, motor->FrontR.speed);
+    err = ledc_update_duty(LEDC_LOW_SPEED_MODE, motor->FrontR.pwm_channel);
+
+    // * BL
+    err = i2c9555pin_write(device_mtr, motor->BackL.in1_pin, motor->BackL.in1_level);
+    err = i2c9555pin_write(device_mtr, motor->BackL.in2_pin, motor->BackL.in2_level);
+    err = ledc_set_duty(LEDC_LOW_SPEED_MODE, motor->BackL.pwm_channel, motor->BackL.speed);
+    err = ledc_update_duty(LEDC_LOW_SPEED_MODE, motor->BackL.pwm_channel);
+
+    // * BR
+    err = i2c9555pin_write(device_mtr, motor->BackR.in1_pin, motor->BackR.in1_level);
+    err = i2c9555pin_write(device_mtr, motor->BackR.in2_pin, motor->BackR.in2_level);
+    err = ledc_set_duty(LEDC_LOW_SPEED_MODE, motor->BackR.pwm_channel, motor->BackR.speed);
+    err = ledc_update_duty(LEDC_LOW_SPEED_MODE, motor->BackR.pwm_channel);
+
+    if (err)
+    {
+        return err;
+    } else {
+        return ESP_OK;
+    }
+
 }
 
 // ! IR Module Read Task
@@ -318,6 +418,75 @@ void ir_read_task()
         }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
+}
+
+// ? Mecanum Wheel Movement Function
+/**
+ * @brief Mecanum wheel omnidirectional movement with rotation
+ * @param motor Pointer to MotorGroup structure (reads vx, vy, vr from struct)
+ * @param mag Speed magnitude multiplier (0.0 ~ 1.0)
+ * 
+ * Before calling, set motor->vx, motor->vy, motor->vr:
+ *   vx: Lateral velocity (-1.0 ~ 1.0, positive = right)
+ *   vy: Longitudinal velocity (-1.0 ~ 1.0, positive = forward)
+ *   vr: Angular velocity (-1.0 ~ 1.0, positive = clockwise)
+ * 
+ * ! Mecanum wheel kinematics:
+ * ? FL = Vy + Vx + ω
+ * ? FR = Vy - Vx - ω
+ * ? BL = Vy - Vx + ω
+ * ? BR = Vy + Vx - ω
+ */
+static void mecanum_move(MotorGroup* motor, float mag)
+{
+    // Read velocity values from MotorGroup structure
+    float vx = motor->vx;
+    float vy = motor->vy;
+    float omega = motor->vr;
+    
+    // Calculate each wheel speed (-1.0 ~ 1.0)
+    float fl = vy + vx + omega;
+    float fr = vy - vx - omega;
+    float bl = vy - vx + omega;
+    float br = vy + vx - omega;
+    
+    // Normalize to ensure max value does not exceed 1.0
+    float max_val = fmaxf(fmaxf(fabsf(fl), fabsf(fr)), fmaxf(fabsf(bl), fabsf(br)));
+    if (max_val > 1.0f)
+    {
+        fl /= max_val;
+        fr /= max_val;
+        bl /= max_val;
+        br /= max_val;
+    }
+    
+    // Apply speed magnitude
+    fl *= mag;
+    fr *= mag;
+    bl *= mag;
+    br *= mag;
+    
+    // Set front-left wheel
+    motor->FrontL.in1_level = (fl >= 0) ? 1 : 0;
+    motor->FrontL.in2_level = (fl >= 0) ? 0 : 1;
+    motor->FrontL.speed = (uint16_t)(fabsf(fl) * MTR_FULL_SPD);
+    
+    // Set front-right wheel
+    motor->FrontR.in1_level = (fr >= 0) ? 1 : 0;
+    motor->FrontR.in2_level = (fr >= 0) ? 0 : 1;
+    motor->FrontR.speed = (uint16_t)(fabsf(fr) * MTR_FULL_SPD);
+    
+    // Set back-left wheel
+    motor->BackL.in1_level = (bl >= 0) ? 1 : 0;
+    motor->BackL.in2_level = (bl >= 0) ? 0 : 1;
+    motor->BackL.speed = (uint16_t)(fabsf(bl) * MTR_FULL_SPD);
+    
+    // Set back-right wheel
+    motor->BackR.in1_level = (br >= 0) ? 1 : 0;
+    motor->BackR.in2_level = (br >= 0) ? 0 : 1;
+    motor->BackR.speed = (uint16_t)(fabsf(br) * MTR_FULL_SPD);
+    
+    mtr_spd_setting(motor);
 }
 
 // ! IR Module Input Callback
@@ -521,130 +690,97 @@ static esp_err_t read_sensor_registers(i2c_master_dev_handle_t dev_handle, uint8
 // ? Motor Movement Control START
 static void moveForwardFast()
 {
-    // Set motor directions for forward movement
-    i2c9555pin_write(device_mtr, EXT_IO0, 1); // * MTR_FL_IN1
-    i2c9555pin_write(device_mtr, EXT_IO1, 0); // * MTR_FL_IN2
-    i2c9555pin_write(device_mtr, EXT_IO2, 1); // * MTR_FR_IN1
-    i2c9555pin_write(device_mtr, EXT_IO3, 0); // * MTR_FR_IN2
-    i2c9555pin_write(device_mtr, EXT_IO4, 1); // * MTR_BL_IN1
-    i2c9555pin_write(device_mtr, EXT_IO5, 0); // * MTR_BL_IN2
-    i2c9555pin_write(device_mtr, EXT_IO6, 1); // * MTR_BR_IN1
-    i2c9555pin_write(device_mtr, EXT_IO7, 0); // * MTR_BR_IN2
-    // Set motor speeds
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, MTR_FULL_SPD); // * Front-Left Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, MTR_FULL_SPD); // * Front-Right Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, MTR_FULL_SPD); // * Back-Left Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3, MTR_FULL_SPD); // * Back-Right Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
+    // vx=0, vy=1 (forward), vr=0
+    mecanum.vx = 0.0f;
+    mecanum.vy = 1.0f;
+    mecanum.vr = 0.0f;
+    mecanum_move((MotorGroup*)&mecanum, 1.0f);
 }
 
 static void sharpTurnLeft(float mag)
 {
-    // Set motor directions for left turn
-    i2c9555pin_write(device_mtr, EXT_IO0, 0); // * MTR_FL_IN1
-    i2c9555pin_write(device_mtr, EXT_IO1, 1); // * MTR_FL_IN2
-    i2c9555pin_write(device_mtr, EXT_IO2, 1); // * MTR_FR_IN1
-    i2c9555pin_write(device_mtr, EXT_IO3, 0); // * MTR_FR_IN2
-    i2c9555pin_write(device_mtr, EXT_IO4, 0); // * MTR_BL_IN1
-    i2c9555pin_write(device_mtr, EXT_IO5, 1); // * MTR_BL_IN2
-    i2c9555pin_write(device_mtr, EXT_IO6, 1); // * MTR_BR_IN1
-    i2c9555pin_write(device_mtr, EXT_IO7, 0); // * MTR_BR_IN2
-    // Set motor speeds
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, MTR_TURN_SPD * mag); // * Front-Left Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, MTR_TURN_SPD * mag); // * Front-Right Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, MTR_TURN_SPD * mag); // * Back-Left Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3, MTR_TURN_SPD * mag); // * Back-Right Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
+    // vx=0, vy=0, vr=-1 (counter-clockwise)
+    mecanum.vx = 0.0f;
+    mecanum.vy = 0.0f;
+    mecanum.vr = -1.0f;
+    mecanum_move((MotorGroup*)&mecanum, mag * 0.5f);
 }
 
 static void sharpTurnRight(float mag)
 {
-    // Set motor directions for right turn
-    i2c9555pin_write(device_mtr, EXT_IO0, 1); // * MTR_FL_IN1
-    i2c9555pin_write(device_mtr, EXT_IO1, 0); // * MTR_FL_IN2
-    i2c9555pin_write(device_mtr, EXT_IO2, 0); // * MTR_FR_IN1
-    i2c9555pin_write(device_mtr, EXT_IO3, 1); // * MTR_FR_IN2
-    i2c9555pin_write(device_mtr, EXT_IO4, 1); // * MTR_BL_IN1
-    i2c9555pin_write(device_mtr, EXT_IO5, 0); // * MTR_BL_IN2
-    i2c9555pin_write(device_mtr, EXT_IO6, 0); // * MTR_BR_IN1
-    i2c9555pin_write(device_mtr, EXT_IO7, 1); // * MTR_BR_IN2
-    // Set motor speeds
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, MTR_TURN_SPD * mag); // * Front-Left Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, MTR_TURN_SPD * mag); // * Front-Right Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, MTR_TURN_SPD * mag); // * Back-Left Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3, MTR_TURN_SPD * mag); // * Back-Right Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
+    // vx=0, vy=0, vr=1 (clockwise)
+    mecanum.vx = 0.0f;
+    mecanum.vy = 0.0f;
+    mecanum.vr = 1.0f;
+    mecanum_move((MotorGroup*)&mecanum, mag * 0.5f);
 }
 
 static void slightTurnLeft()
 {
-    // Set motor directions for slight left turn
-    i2c9555pin_write(device_mtr, EXT_IO0, 1); // * MTR_FL_IN1
-    i2c9555pin_write(device_mtr, EXT_IO1, 0); // * MTR_FL_IN2
-    i2c9555pin_write(device_mtr, EXT_IO2, 1); // * MTR_FR_IN1
-    i2c9555pin_write(device_mtr, EXT_IO3, 0); // * MTR_FR_IN2
-    i2c9555pin_write(device_mtr, EXT_IO4, 1); // * MTR_BL_IN1
-    i2c9555pin_write(device_mtr, EXT_IO5, 0); // * MTR_BL_IN2
-    i2c9555pin_write(device_mtr, EXT_IO6, 1); // * MTR_BR_IN1
-    i2c9555pin_write(device_mtr, EXT_IO7, 0); // * MTR_BR_IN2
-    // Set motor speeds
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, MTR_SLOW_SPD); // * Front-Left Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, MTR_FULL_SPD); // * Front-Right Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, MTR_SLOW_SPD); // * Back-Left Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3, MTR_FULL_SPD); // * Back-Right Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
+    // vx=0, vy=1 (forward), vr=-0.3 (slight counter-clockwise)
+    mecanum.vx = 0.0f;
+    mecanum.vy = 1.0f;
+    mecanum.vr = -0.3f;
+    mecanum_move((MotorGroup*)&mecanum, 0.8f);
 }
 
 static void slightTurnRight()
 {
-    // Set motor directions for slight right turn
-    i2c9555pin_write(device_mtr, EXT_IO0, 1); // * MTR_FL_IN1
-    i2c9555pin_write(device_mtr, EXT_IO1, 0); // * MTR_FL_IN2
-    i2c9555pin_write(device_mtr, EXT_IO2, 1); // * MTR_FR_IN1
-    i2c9555pin_write(device_mtr, EXT_IO3, 0); // * MTR_FR_IN2
-    i2c9555pin_write(device_mtr, EXT_IO4, 1); // * MTR_BL_IN1
-    i2c9555pin_write(device_mtr, EXT_IO5, 0); // * MTR_BL_IN2
-    i2c9555pin_write(device_mtr, EXT_IO6, 1); // * MTR_BR_IN1
-    i2c9555pin_write(device_mtr, EXT_IO7, 0); // * MTR_BR_IN2
-    // Set motor speeds
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, MTR_FULL_SPD); // * Front-Left Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, MTR_SLOW_SPD); // * Front-Right Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, MTR_FULL_SPD); // * Back-Left Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3, MTR_SLOW_SPD); // * Back-Right Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
+    // vx=0, vy=1 (forward), vr=0.3 (slight clockwise)
+    mecanum.vx = 0.0f;
+    mecanum.vy = 1.0f;
+    mecanum.vr = 0.3f;
+    mecanum_move((MotorGroup*)&mecanum, 0.8f);
+}
+
+static void shift_left(float mag)
+{
+    // vx=-1 (left), vy=0, vr=0
+    mecanum.vx = -1.0f;
+    mecanum.vy = 0.0f;
+    mecanum.vr = 0.0f;
+    mecanum_move((MotorGroup*)&mecanum, mag * 0.5f);
+}
+
+static void shift_right(float mag)
+{
+    // vx=1 (right), vy=0, vr=0
+    mecanum.vx = 1.0f;
+    mecanum.vy = 0.0f;
+    mecanum.vr = 0.0f;
+    mecanum_move((MotorGroup*)&mecanum, mag * 0.5f);
+}
+
+static void rotate_clockwise(float mag)
+{
+    // vx=0, vy=0, vr=1 (clockwise)
+    mecanum.vx = 0.0f;
+    mecanum.vy = 0.0f;
+    mecanum.vr = 1.0f;
+    mecanum_move((MotorGroup*)&mecanum, mag * 0.5f);
+}
+
+static void rotate_counterclockwise(float mag)
+{
+    // vx=0, vy=0, vr=-1 (counter-clockwise)
+    mecanum.vx = 0.0f;
+    mecanum.vy = 0.0f;
+    mecanum.vr = -1.0f;
+    mecanum_move((MotorGroup*)&mecanum, mag * 0.5f);
 }
 
 static void stopMotors()
 {
-    // Set motor speeds to zero
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, MTR_STOP); // * Front-Left Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, MTR_STOP); // * Front-Right Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, MTR_STOP); // * Back-Left Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3, MTR_STOP); // * Back-Right Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
+    // All velocities zero = stop
+    mecanum.vx = 0.0f;
+    mecanum.vy = 0.0f;
+    mecanum.vr = 0.0f;
+    mecanum_move((MotorGroup*)&mecanum, 0.0f);
 }
 // ? Motor Movement Control END
 
 // ! Motor Control based on IR State
-void mtr_ctrl(void *args)
+void mtr_ctrl_ir(void *args)
 {
     current_mode = CONTROL_MODE_AUTO;
     bool init_flag = false;
@@ -772,15 +908,15 @@ void mtr_ctrl(void *args)
         }
 
         // Small delay to ensure idle task runs and watchdog is fed
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
 
 // ! Tablet Data Callback Handler
 void tablet_data_handler(TabletData data)
 {
-    ESP_LOGI(TAG, "X: %u, Y: %u, Lifting: %u, mclawSw: %u",
-             data.x_value, data.y_value, data.lifting_arm_value, data.mclaw_switch);
+    ESP_LOGI(TAG, "X: %u, Y: %u, R: %u, Lifting: %u, mclawSw: %u",
+             data.x_value, data.y_value, data.r_value, data.lifting_arm_value, data.mclaw_switch);
 
     // * Only process tablet data in manual mode
     if (current_mode != CONTROL_MODE_MANUAL)
@@ -790,155 +926,14 @@ void tablet_data_handler(TabletData data)
     }
 
     // ? Manual Control Mode Movement START
-    // * Map tablet data to motor controls
-    // * X: 0x0000(Backward) <- 0x7F(Center) -> 0xFF(Forward)
-    // * Y: 0x0000(Left) <- 0x7F(Center) -> 0xFF(Right)
-    uint16_t x = data.x_value;
-    uint16_t y = data.y_value;
-
-    // * Check if joystick is at neutral position
-    if (x == 0x7F && y == 0x7F)
-    {
-        stopMotors();
-        return;
-    }
-
-    // * Determine motor speeds based on x and y values
-    uint16_t fl_speed, fr_speed, bl_speed, br_speed;
-
-    // * Motor direction control
-    uint8_t fl_in1, fl_in2, fr_in1, fr_in2, bl_in1, bl_in2, br_in1, br_in2;
-
-    // * Case 1: Pure forward (x > 0x7F, y == 0x7F)
-    if (x > 0x7F && y == 0x7F)
-    {
-        moveForwardFast();
-        return;
-    }
-
-    // * Case 2: Pure backward (x < 0x7F, y == 0x7F)
-    if (x < 0x7F && y == 0x7F)
-    {
-        // Backward
-        fl_in1 = 0;
-        fl_in2 = 1;
-        fr_in1 = 0;
-        fr_in2 = 1;
-        bl_in1 = 0;
-        bl_in2 = 1;
-        br_in1 = 0;
-        br_in2 = 1;
-        fl_speed = fr_speed = bl_speed = br_speed = MTR_FULL_SPD;
-    }
-    // * Case 3: Pure left (x == 0x7F, y < 0x7F)
-    else if (x == 0x7F && y < 0x7F)
-    {
-        sharpTurnLeft(1.0);
-        return;
-    }
-    // * Case 4: Pure right (x == 0x7F, y > 0x7F)
-    else if (x == 0x7F && y > 0x7F)
-    {
-        sharpTurnRight(1.0);
-        return;
-    }
-    // * Case 5: Forward + Left diagonal
-    else if (x > 0x7F && y < 0x7F)
-    {
-        fl_in1 = 1;
-        fl_in2 = 0;
-        fr_in1 = 1;
-        fr_in2 = 0;
-        bl_in1 = 1;
-        bl_in2 = 0;
-        br_in1 = 1;
-        br_in2 = 0;
-
-        // Left side motors slower, right side faster
-        fl_speed = (uint16_t)(MTR_FULL_SPD * (0x7F - y) / 127);
-        bl_speed = (uint16_t)(MTR_FULL_SPD * (0x7F - y) / 127);
-        fr_speed = MTR_FULL_SPD;
-        br_speed = MTR_FULL_SPD;
-    }
-    // * Case 6: Forward + Right diagonal
-    else if (x > 0x7F && y > 0x7F)
-    {
-        fl_in1 = 1;
-        fl_in2 = 0;
-        fr_in1 = 1;
-        fr_in2 = 0;
-        bl_in1 = 1;
-        bl_in2 = 0;
-        br_in1 = 1;
-        br_in2 = 0;
-
-        // Right side motors slower, left side faster
-        fr_speed = (uint16_t)(MTR_FULL_SPD * (y - 0x7F) / 127);
-        br_speed = (uint16_t)(MTR_FULL_SPD * (y - 0x7F) / 127);
-        fl_speed = MTR_FULL_SPD;
-        bl_speed = MTR_FULL_SPD;
-    }
-    // * Case 7: Backward + Left diagonal
-    else if (x < 0x7F && y < 0x7F)
-    {
-        fl_in1 = 0;
-        fl_in2 = 1;
-        fr_in1 = 0;
-        fr_in2 = 1;
-        bl_in1 = 0;
-        bl_in2 = 1;
-        br_in1 = 0;
-        br_in2 = 1;
-
-        // Left side motors slower, right side faster
-        fl_speed = (uint16_t)(MTR_FULL_SPD * (0x7F - y) / 127);
-        bl_speed = (uint16_t)(MTR_FULL_SPD * (0x7F - y) / 127);
-        fr_speed = MTR_FULL_SPD;
-        br_speed = MTR_FULL_SPD;
-    }
-    // * Case 8: Backward + Right diagonal
-    else if (x < 0x7F && y > 0x7F)
-    {
-        fl_in1 = 0;
-        fl_in2 = 1;
-        fr_in1 = 0;
-        fr_in2 = 1;
-        bl_in1 = 0;
-        bl_in2 = 1;
-        br_in1 = 0;
-        br_in2 = 1;
-
-        // Right side motors slower, left side faster
-        fr_speed = (uint16_t)(MTR_FULL_SPD * (y - 0x7F) / 127);
-        br_speed = (uint16_t)(MTR_FULL_SPD * (y - 0x7F) / 127);
-        fl_speed = MTR_FULL_SPD;
-        bl_speed = MTR_FULL_SPD;
-    }
-    else
-    {
-        stopMotors();
-        return;
-    }
-
-    // * Set motor directions
-    i2c9555pin_write(device_mtr, EXT_IO0, fl_in1); // * MTR_FL_IN1
-    i2c9555pin_write(device_mtr, EXT_IO1, fl_in2); // * MTR_FL_IN2
-    i2c9555pin_write(device_mtr, EXT_IO2, fr_in1); // * MTR_FR_IN1
-    i2c9555pin_write(device_mtr, EXT_IO3, fr_in2); // * MTR_FR_IN2
-    i2c9555pin_write(device_mtr, EXT_IO4, bl_in1); // * MTR_BL_IN1
-    i2c9555pin_write(device_mtr, EXT_IO5, bl_in2); // * MTR_BL_IN2
-    i2c9555pin_write(device_mtr, EXT_IO6, br_in1); // * MTR_BR_IN1
-    i2c9555pin_write(device_mtr, EXT_IO7, br_in2); // * MTR_BR_IN2
-
-    // * Set motor speeds
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, fl_speed); // * Front-Left Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, fr_speed); // * Front-Right Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, bl_speed); // * Back-Left Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3, br_speed); // * Back-Right Motor
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
+    // * Map joystick to mecanum wheel translation
+    // * X: 0x00(Left) <- 0x7F(Center) -> 0xFF(Right) => vx (lateral)
+    // * Y: 0x00(Backward) <- 0x7F(Center) -> 0xFF(Forward) => vy (longitudinal)
+    // * R: 0x00(CCW) <- 0x7F(Center) -> 0xFF(CW) => vr (rotational)
+    mecanum.vx = ((float)data.x_value - 127.0f) / 127.0f;
+    mecanum.vy = ((float)data.y_value - 127.0f) / 127.0f;
+    mecanum.vr = ((float)data.r_value - 127.0f) / 127.0f;
+    mecanum_move((MotorGroup*)&mecanum, 1.0f);
     // ? Manual Control Mode Movement END
 
     // ? Lifting Arm Control START
