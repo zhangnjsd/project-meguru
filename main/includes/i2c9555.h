@@ -132,6 +132,13 @@ extern "C" {
 int i2c9555_add_device(gpio_num_t sda, gpio_num_t scl, uint16_t addr, gpio_num_t int_pin, i2c9555_input_cb_t f);
 
 /**
+ * @brief Attach an already-created I2C bus so the driver does not reinitialize it.
+ * @param bus_handle Shared bus handle created elsewhere
+ * @return esp_err_t
+ */
+esp_err_t i2c9555_attach_bus(i2c_master_bus_handle_t bus_handle);
+
+/**
  * @brief Write a 16-bit word to a device register
  * @param device_id Device ID
  * @param reg Register address

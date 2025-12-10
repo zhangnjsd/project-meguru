@@ -99,6 +99,24 @@ static i2c_master_bus_handle_t i2c9555_bus_handle = NULL;
 static i2c9555_device_t i2c9555_devices[MAX_I2C9555_DEVICES];
 static uint8_t i2c9555_device_count = 0;
 
+esp_err_t i2c9555_attach_bus(i2c_master_bus_handle_t bus_handle)
+{
+    if (bus_handle == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (i2c9555_bus_handle != NULL && i2c9555_bus_handle != bus_handle)
+    {
+        ESP_LOGE(TAG, "I2C9555 bus already set; refusing to overwrite existing handle");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    i2c9555_bus_handle = bus_handle;
+    ESP_LOGI(TAG, "I2C9555 attached to existing bus handle");
+    return ESP_OK;
+}
+
 #define I2C9555_ISR_BIT BIT0
 
 static void IRAM_ATTR i2c9555_int_handle(void *arg)
@@ -176,8 +194,14 @@ int i2c9555_add_device(gpio_num_t sda, gpio_num_t scl, uint16_t addr, gpio_num_t
         return -1;
     }
 
-    if (i2c9555_device_count == 0)
+    if (i2c9555_bus_handle == NULL)
     {
+        if (i2c9555_device_count != 0)
+        {
+            ESP_LOGE(TAG, "I2C bus handle missing while devices already registered");
+            return -1;
+        }
+
         i2c_master_bus_config_t bus_config = {
             .clk_source = I2C_CLK_SRC_DEFAULT,
             .sda_io_num = sda,
@@ -187,6 +211,11 @@ int i2c9555_add_device(gpio_num_t sda, gpio_num_t scl, uint16_t addr, gpio_num_t
             .flags = {.enable_internal_pullup = 1}
         };
         i2c_new_master_bus(&bus_config, &i2c9555_bus_handle);
+        ESP_LOGI(TAG, "Initialized new I2C bus for 9555 (port %d)", bus_config.i2c_port);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Reusing existing I2C bus handle for 9555 devices");
     }
 
     uint8_t device_id = i2c9555_device_count;
@@ -250,8 +279,8 @@ esp_err_t i2c9555_write_word(uint8_t device_id, uint8_t reg, uint16_t data)
     write_buf[1] = data & 0xFF;        // Low byte (Port 0)
     write_buf[2] = (data >> 8) & 0xFF; // High byte (Port 1)
 
-    ESP_LOGI(TAG, "[DEV%d] Write reg 0x%02X: 0x%02X 0x%02X (data=0x%04X)",
-             device_id, reg, write_buf[1], write_buf[2], data);
+    //ESP_LOGI(TAG, "[DEV%d] Write reg 0x%02X: 0x%02X 0x%02X (data=0x%04X)",
+    //         device_id, reg, write_buf[1], write_buf[2], data);
 
     return i2c_master_transmit(i2c9555_devices[device_id].dev_handle, write_buf, sizeof(write_buf), 500);
 }
@@ -279,8 +308,8 @@ esp_err_t i2c9555_read_word(uint8_t device_id, uint8_t reg, uint16_t *data)
 
     *data = ((uint16_t)buf[0]) | ((uint16_t)buf[1] << 8);
 
-    ESP_LOGI(TAG, "[DEV%d] Read reg 0x%02X: 0x%02X 0x%02X (data=0x%04X)",
-             device_id, reg, buf[0], buf[1], *data);
+    //ESP_LOGI(TAG, "[DEV%d] Read reg 0x%02X: 0x%02X 0x%02X (data=0x%04X)",
+    //         device_id, reg, buf[0], buf[1], *data);
 
     return ESP_OK;
 }

@@ -128,13 +128,20 @@ static int x_cb(
         {
             uint16_t data_len = OS_MBUF_PKTLEN(ctxt->om);
             
+            // Debug: Print raw bytes received
+            ESP_LOGI(TAG, "X Raw data len=%d, bytes: [0x%02X, 0x%02X]", 
+                     data_len,
+                     data_len >= 1 ? ctxt->om->om_data[0] : 0,
+                     data_len >= 2 ? ctxt->om->om_data[1] : 0);
+            
             if (data_len >= 2)
             {
-                uint16_t x_val = (ctxt->om->om_data[0] << 8) | ctxt->om->om_data[1];
+                // Little-endian: low byte first, high byte second
+                uint16_t x_val = ctxt->om->om_data[0] | (ctxt->om->om_data[1] << 8);
                 
                 tablet_data.x_value = x_val;
                 
-                ESP_LOGI(TAG, "Received X value: %u", x_val);
+                ESP_LOGI(TAG, "Received X value: %u (0x%04X)", x_val, x_val);
                 
                 if (data_callback != NULL)
                 {
@@ -175,13 +182,20 @@ static int y_cb(
         {
             uint16_t data_len = OS_MBUF_PKTLEN(ctxt->om);
             
+            // Debug: Print raw bytes received
+            ESP_LOGI(TAG, "Y Raw data len=%d, bytes: [0x%02X, 0x%02X]", 
+                     data_len,
+                     data_len >= 1 ? ctxt->om->om_data[0] : 0,
+                     data_len >= 2 ? ctxt->om->om_data[1] : 0);
+            
             if (data_len >= 2)
             {
-                uint16_t y_val = (ctxt->om->om_data[0] << 8) | ctxt->om->om_data[1];
+                // Little-endian: low byte first, high byte second
+                uint16_t y_val = ctxt->om->om_data[0] | (ctxt->om->om_data[1] << 8);
                 
                 tablet_data.y_value = y_val;
                 
-                ESP_LOGI(TAG, "Received Y value: %u", y_val);
+                ESP_LOGI(TAG, "Received Y value: %u (0x%04X)", y_val, y_val);
                 
                 if (data_callback != NULL)
                 {
@@ -266,7 +280,8 @@ static int lifting_arm_cb(
 
             if (data_len >= 2)
             {
-                uint16_t lifting_val = (ctxt->om->om_data[0] << 8) | ctxt->om->om_data[1];
+                // Little-endian: low byte first, high byte second
+                uint16_t lifting_val = ctxt->om->om_data[0] | (ctxt->om->om_data[1] << 8);
 
                 tablet_data.lifting_arm_value = lifting_val;
 
@@ -307,17 +322,18 @@ static int mclaw_switch_cb(
     {
     case BLE_GATT_ACCESS_OP_WRITE_CHR:
         /* Verify attribute handle */
-        if (attr_handle == lifting_arm_handler)
+        if (attr_handle == mclaw_switch_handler)
         {
             uint16_t data_len = OS_MBUF_PKTLEN(ctxt->om);
 
             if (data_len >= 2)
             {
-                uint16_t lifting_val = (ctxt->om->om_data[0] << 8) | ctxt->om->om_data[1];
+                // Little-endian: low byte first, high byte second
+                uint16_t mclaw_val = ctxt->om->om_data[0] | (ctxt->om->om_data[1] << 8);
 
-                tablet_data.lifting_arm_value = lifting_val;
+                tablet_data.mclaw_switch = mclaw_val;
 
-                ESP_LOGI(TAG, "Received Mechanical Claw Switch value: %u", lifting_val);
+                ESP_LOGI(TAG, "Received Mechanical Claw Switch value: %u", mclaw_val);
 
                 if (data_callback != NULL)
                 {

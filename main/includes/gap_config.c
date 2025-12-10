@@ -208,8 +208,8 @@ static void start_advertising(void)
     /* Set advertizing params */
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;   // Undirected connectable advertising
     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;   // General discoverable mode
-    adv_params.itvl_min = BLE_GAP_ADV_ITVL_MS(8);
-    adv_params.itvl_max = BLE_GAP_ADV_ITVL_MS(12);
+    adv_params.itvl_min = BLE_GAP_ADV_ITVL_MS(40);  // >= 20 ms
+    adv_params.itvl_max = BLE_GAP_ADV_ITVL_MS(60);  // >= itvl_min
     /* Set advertizing params finished */
 
     /* Start advertizing */
