@@ -1,5 +1,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "includes/i2c9555.h"
 #include "esp_log.h"
 #include "esp_err.h"
@@ -14,10 +15,13 @@
 #define TAG "MAIN"
 #endif
 
-#define SDA_PIN GPIO_NUM_8 /*!< SDA BUS*/
-#define SCL_PIN GPIO_NUM_9 /*!< SDA BUS*/
+#define TCA_SDA_PIN GPIO_NUM_8 /*!< SDA BUS*/
+#define TCA_SCL_PIN GPIO_NUM_9 /*!< SDA BUS*/
 #define I2C_FREQ_HZ 100000 /*!< I2C Frequency 100kHz*/
 #define I2C_TIMEOUT_MS 1000 /*!< I2C Timeout in milliseconds*/
+
+#define IR_SCL_PIN GPIO_NUM_6 /*!< IR Sensor SCL Pin*/
+#define IR_SDA_PIN GPIO_NUM_7 /*!< IR Sensor SDA Pin*/
 
 #define I2C_9555_ADDRESS 0x20 /* I2C9555 Address */
 
@@ -36,7 +40,9 @@
 #define SERVO_FULL_RANGE_DEG 270                  /*!< Servo Full Range in degrees */
 #define CLAW_OPEN_DEG 75                          /*!< Claw Open Position in degrees */
 
-#define MTR_FULL_SPD 4096 /*!< Full Speed Duty Cycle */
+#define MTR_FULL_SPD 4096 /*!< Full Speed Duty Cycle (12-bit resolution) */
+#define MTR_MIN_START 3120 /*!< Minimum PWM to start motor (~18.3V at 24V supply = 76%) */
+#define MTR_INPUT_DEADZONE 0.05f /*!< Input deadzone (5%) - below this, motor stops */
 #define MTR_TURN_SPD 2048 /*!< Turn Speed Duty Cycle */
 #define MTR_SLOW_SPD 1024 /*!< Slow Speed Duty Cycle */
 #define MTR_STOP 0        /*!< Stop Duty Cycle */
@@ -60,27 +66,33 @@ TaskHandle_t ir_task_handle = NULL;
 volatile ControlMode current_mode = CONTROL_MODE_AUTO;
 volatile bool manual_control_active = false;
 
-// ? Line-following State Machine
+// Queue for Tablet Data
+QueueHandle_t tablet_queue = NULL;
+
+// ? Line-following using weighted position algorithm
+// * Sensor weights for position calculation (from left to right)
+// * LLL=-4, LL=-3, LF=-2, FL=-1, FR=+1, RF=+2, RR=+3, RRR=+4
 typedef enum
 {
-    NONE,              /*!<Priority: 0 No IR Sensor Detected Line*/
-    BOTH_FORWARD,      /*!<Priority: 2 Center Sensors (FL & FR) Detected - Straight Line*/
-    ONLY_L_FORWARD,    /*!<Priority: 2 Only Left Center Sensor (FL) Detected*/
-    ONLY_R_FORWARD,    /*!<Priority: 2 Only Right Center Sensor (FR) Detected*/
-    L_MED_DETECTED,    /*!<Priority: 3 Left Medium Layer (LF & FR) Detected - Early Correction*/
-    R_MED_DETECTED,    /*!<Priority: 3 Right Medium Layer (RF & FR) Detected - Early Correction*/
-    L_FIRST_DETECTED,  /*!<Priority: 3 Only Left First Layer (LF) Detected*/
-    R_FIRST_DETECTED,  /*!<Priority: 3 Only Right First Layer (RF) Detected*/
-    L_SECOND_DETECTED, /*!<Priority: 4 Left Second Layer (LL) Detected - Sharp Turn*/
-    R_SECOND_DETECTED, /*!<Priority: 4 Right Second Layer (RR) Detected - Sharp Turn*/
-    L_FIRST_SECOND_DETECTED, /*!<Priority: 4 Left Multiple Layers (LL & LF) Detected*/
-    R_FIRST_SECOND_DETECTED, /*!<Priority: 4 Right Multiple Layers (RR & RF) Detected*/
-    L_3RD_DETECTED,   /*!<Priority: 5 Left Outermost Layer (LLL) Detected - Extreme Turn*/
-    R_3RD_DETECTED,   /*!<Priority: 5 Right Outermost Layer (RRR) Detected - Extreme Turn*/
-    L_SECOND_3RD_DETECTED, /*!<Priority: 5 Left Extreme (LL & LLL) Detected - Maximum Turn*/
-    R_SECOND_3RD_DETECTED, /*!<Priority: 5 Right Extreme (RR & RRR) Detected - Maximum Turn*/
-    FULL_DETECTED,     /*!<Priority: 1 (Highest) All Outermost Sensors (LLL & RRR) Detected - Line Start/End*/
-} IRState;
+    LINE_NONE,         /*!< No line detected */
+    LINE_FOLLOWING,    /*!< Normal line following */
+    LINE_FULL,         /*!< Full bar detected (start/stop) */
+} LineState;
+
+// Line following control parameters
+typedef struct {
+    float position;       // Weighted position: negative=left, positive=right
+    float last_position;  // Previous position for derivative
+    int sensor_count;     // Number of sensors detecting line
+    bool full_detected;   // Both outermost sensors detected
+} LineFollowData;
+
+volatile LineFollowData line_data = {0};
+
+// PD Controller parameters
+#define LINE_KP 0.9f      // Proportional gain
+#define LINE_KD 0.1f     // Derivative gain
+#define LINE_BASE_SPEED 0.5f  // Base forward speed
 
 // ? IR Data
 typedef struct
@@ -132,10 +144,11 @@ typedef struct
 } MotorGroup;
 
 volatile IRData current_ir_data;
-volatile IRState current_ir_state = NONE;
+volatile LineState current_line_state = LINE_NONE;
 
-// Shared I2C resources (initialized once and reused by IR + 9555)
-static i2c_master_bus_handle_t shared_i2c_bus = NULL;
+// Separate I2C buses for IR sensor and TCA9555
+static i2c_master_bus_handle_t tca_i2c_bus = NULL;    // I2C bus for TCA9555 (GPIO8/GPIO9)
+static i2c_master_bus_handle_t ir_i2c_bus = NULL;     // I2C bus for IR sensor (GPIO6/GPIO7)
 static i2c_master_dev_handle_t ir_dev_handle = NULL;
 
 static uint16_t servo_duty_from_pulse_us(uint32_t pulse_us)
@@ -160,8 +173,11 @@ void ir_read_task();
 // ? Mecanum Wheel Movement Function
 static void mecanum_move(MotorGroup* motor, float mag);
 
-// ? IR Init
-static esp_err_t i2c_bus_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_handle_t *dev_handle);
+// ? IR I2C Bus Init (GPIO6/GPIO7)
+static esp_err_t ir_i2c_bus_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_handle_t *dev_handle);
+
+// ? TCA9555 I2C Bus Init (GPIO8/GPIO9)
+static esp_err_t tca_i2c_bus_init(i2c_master_bus_handle_t *bus_handle);
 
 // ? IR Sensor Read
 static esp_err_t read_sensor_registers(i2c_master_dev_handle_t dev_handle, uint8_t reg_addr, uint8_t *buffer, size_t length);
@@ -183,12 +199,16 @@ void app_main(void)
         .RRR = false,
     };
 
-    // Initialize I2C bus once (shared by IR sensor + 9555 expander)
-    ESP_ERROR_CHECK(i2c_bus_init(&shared_i2c_bus, &ir_dev_handle));
-    ESP_ERROR_CHECK(i2c9555_attach_bus(shared_i2c_bus));
+    // Initialize separate I2C buses for IR sensor and TCA9555
+    ESP_ERROR_CHECK(ir_i2c_bus_init(&ir_i2c_bus, &ir_dev_handle));  // IR sensor on GPIO6/GPIO7
+    ESP_ERROR_CHECK(tca_i2c_bus_init(&tca_i2c_bus));                // TCA9555 on GPIO8/GPIO9
+    ESP_ERROR_CHECK(i2c9555_attach_bus(tca_i2c_bus));
+
+    // * Initialize Tablet Data Queue
+    tablet_queue = xQueueCreate(1, sizeof(TabletData));
 
     // * Initialize Motor Controller via 9555
-    device_mtr = i2c9555_add_device(SDA_PIN, SCL_PIN, I2C_9555_ADDRESS, GPIO_NUM_NC, NULL);
+    device_mtr = i2c9555_add_device(TCA_SDA_PIN, TCA_SCL_PIN, I2C_9555_ADDRESS, GPIO_NUM_NC, NULL);
     /*  Motor Controller Configuration
         Pin     Functions       State
         00      MTR_FL_IN1      Output
@@ -208,8 +228,8 @@ void app_main(void)
     ledc_timer_config_t pwm_timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .timer_num = LEDC_TIMER_0,
-        .duty_resolution = LEDC_TIMER_12_BIT, // 4096 levels
-        .freq_hz = 5000,
+        .duty_resolution = LEDC_TIMER_11_BIT, // 2048 levels
+        .freq_hz = 20000,  // 20kHz PWM frequency for quieter motor operation
         .clk_cfg = LEDC_AUTO_CLK,
     };
     ledc_timer_config(&pwm_timer);
@@ -353,7 +373,7 @@ volatile MotorGroup mecanum = {
 
 // ? Motor Controller
 esp_err_t mtr_spd_setting(MotorGroup* motor) {
-    // ERROR?
+    //// ERROR?
     esp_err_t err;
 
     // * FL
@@ -403,10 +423,9 @@ void ir_read_task()
 
     while (1)
     {
-        vTaskDelay(pdMS_TO_TICKS(10));
         if (ir_dev_handle == NULL)
         {
-            vTaskDelay(pdMS_TO_TICKS(20));
+            vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
 
@@ -416,7 +435,7 @@ void ir_read_task()
         } else {
             ESP_LOGE(TAG, "Failed to read state register, error code: 0x%X", err);
         }
-        vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(pdMS_TO_TICKS(2));  // 2ms interval = 500Hz sampling rate
     }
 }
 
@@ -431,11 +450,11 @@ void ir_read_task()
  *   vy: Longitudinal velocity (-1.0 ~ 1.0, positive = forward)
  *   vr: Angular velocity (-1.0 ~ 1.0, positive = clockwise)
  * 
- * ! Mecanum wheel kinematics:
- * ? FL = Vy + Vx + ω
- * ? FR = Vy - Vx - ω
- * ? BL = Vy - Vx + ω
- * ? BR = Vy + Vx - ω
+ * ! Mecanum wheel kinematics (O-type configuration):
+ * ? FL = Vy - Vx + ω
+ * ? FR = Vy + Vx - ω
+ * ? BL = Vy + Vx + ω
+ * ? BR = Vy - Vx - ω
  */
 static void mecanum_move(MotorGroup* motor, float mag)
 {
@@ -444,11 +463,11 @@ static void mecanum_move(MotorGroup* motor, float mag)
     float vy = motor->vy;
     float omega = motor->vr;
     
-    // Calculate each wheel speed (-1.0 ~ 1.0)
-    float fl = vy + vx + omega;
-    float fr = vy - vx - omega;
-    float bl = vy - vx + omega;
-    float br = vy + vx - omega;
+    // Calculate each wheel speed (-1.0 ~ 1.0) - O-type configuration
+    float fl = vy - vx + omega;
+    float fr = vy + vx - omega;
+    float bl = vy + vx + omega;
+    float br = vy - vx - omega;
     
     // Normalize to ensure max value does not exceed 1.0
     float max_val = fmaxf(fmaxf(fabsf(fl), fabsf(fr)), fmaxf(fabsf(bl), fabsf(br)));
@@ -466,25 +485,33 @@ static void mecanum_move(MotorGroup* motor, float mag)
     bl *= mag;
     br *= mag;
     
+    // Helper function to map speed with minimum start threshold
+    // Input: 0~1 float -> Output: 0 or MTR_MIN_START~MTR_FULL_SPD
+    #define MAP_MOTOR_SPEED(speed_val) \
+        (fabsf(speed_val) < MTR_INPUT_DEADZONE ? 0 : \
+         (uint16_t)(MTR_MIN_START + fabsf(speed_val) * (MTR_FULL_SPD - MTR_MIN_START)))
+    
     // Set front-left wheel
     motor->FrontL.in1_level = (fl >= 0) ? 1 : 0;
     motor->FrontL.in2_level = (fl >= 0) ? 0 : 1;
-    motor->FrontL.speed = (uint16_t)(fabsf(fl) * MTR_FULL_SPD);
+    motor->FrontL.speed = MAP_MOTOR_SPEED(fl);
     
     // Set front-right wheel
     motor->FrontR.in1_level = (fr >= 0) ? 1 : 0;
     motor->FrontR.in2_level = (fr >= 0) ? 0 : 1;
-    motor->FrontR.speed = (uint16_t)(fabsf(fr) * MTR_FULL_SPD);
+    motor->FrontR.speed = MAP_MOTOR_SPEED(fr);
     
     // Set back-left wheel
     motor->BackL.in1_level = (bl >= 0) ? 1 : 0;
     motor->BackL.in2_level = (bl >= 0) ? 0 : 1;
-    motor->BackL.speed = (uint16_t)(fabsf(bl) * MTR_FULL_SPD);
+    motor->BackL.speed = MAP_MOTOR_SPEED(bl);
     
     // Set back-right wheel
     motor->BackR.in1_level = (br >= 0) ? 1 : 0;
     motor->BackR.in2_level = (br >= 0) ? 0 : 1;
-    motor->BackR.speed = (uint16_t)(fabsf(br) * MTR_FULL_SPD);
+    motor->BackR.speed = MAP_MOTOR_SPEED(br);
+    
+    #undef MAP_MOTOR_SPEED
     
     mtr_spd_setting(motor);
 }
@@ -492,33 +519,6 @@ static void mecanum_move(MotorGroup* motor, float mag)
 // ! IR Module Input Callback
 void ir_read_callback(uint8_t state_buf[0])
 {
-    /*
-    // * Update IR Data
-    switch (pin)
-    {
-    case EXT_IO0:
-        current_ir_data.LL = level;
-        break;
-    case EXT_IO1:
-        current_ir_data.LF = level;
-        break;
-    case EXT_IO2:
-        current_ir_data.FL = level;
-        break;
-    case EXT_IO3:
-        current_ir_data.FR = level;
-        break;
-    case EXT_IO4:
-        current_ir_data.RF = level;
-        break;
-    case EXT_IO5:
-        current_ir_data.RR = level;
-        break;
-    default:
-        break;
-    }
-    */
-
     // * Update IR Data
     for (size_t i = 0; i < SENSOR_CHANNEL_COUNT; ++i) {
         bool state = (state_buf[0] >> i) & 0x01;
@@ -552,88 +552,45 @@ void ir_read_callback(uint8_t state_buf[0])
         }
     }
 
-    // * Update IR State Machine - FULL_DETECTED has absolute highest priority
-    // * All sensors detecting = line end/corner detection
-    if (current_ir_data.RRR && current_ir_data.LLL)
-    {
-        current_ir_state = FULL_DETECTED;
+    // * Calculate weighted position using PD algorithm
+    // * Sensor weights: LLL=-4, LL=-3, LF=-2, FL=-1, FR=+1, RF=+2, RR=+3, RRR=+4
+    float weighted_sum = 0.0f;
+    int sensor_count = 0;
+    
+    if (current_ir_data.LLL) { weighted_sum += -4.0f; sensor_count++; }
+    if (current_ir_data.LL)  { weighted_sum += -3.0f; sensor_count++; }
+    if (current_ir_data.LF)  { weighted_sum += -2.0f; sensor_count++; }
+    if (current_ir_data.FL)  { weighted_sum += -1.0f; sensor_count++; }
+    if (current_ir_data.FR)  { weighted_sum += +1.0f; sensor_count++; }
+    if (current_ir_data.RF)  { weighted_sum += +2.0f; sensor_count++; }
+    if (current_ir_data.RR)  { weighted_sum += +3.0f; sensor_count++; }
+    if (current_ir_data.RRR) { weighted_sum += +4.0f; sensor_count++; }
+    
+    // Save previous position for derivative calculation
+    line_data.last_position = line_data.position;
+    line_data.sensor_count = sensor_count;
+    
+    // Calculate normalized position (-1.0 to +1.0)
+    if (sensor_count > 0) {
+        line_data.position = weighted_sum / (sensor_count * 4.0f);  // Normalize by max weight
     }
-    // * Center sensors (FL, FR) have second highest priority for straight-line stability
-    else if (current_ir_data.FL && current_ir_data.FR)
-    {
-        current_ir_state = BOTH_FORWARD;
-    }
-    else if (current_ir_data.FL)
-    {
-        current_ir_state = ONLY_L_FORWARD;
-    }
-    else if (current_ir_data.FR)
-    {
-        current_ir_state = ONLY_R_FORWARD;
-    }
-    // * Medium layer (LF, RF) for early correction
-    else if (current_ir_data.LF && current_ir_data.RF)
-    {
-        current_ir_state = BOTH_FORWARD;
-    }
-    else if (current_ir_data.LF && current_ir_data.FR)
-    {
-        current_ir_state = L_MED_DETECTED;
-    }
-    else if (current_ir_data.RF && current_ir_data.FR)
-    {
-        current_ir_state = R_MED_DETECTED;
-    }
-    else if (current_ir_data.LF)
-    {
-        current_ir_state = L_FIRST_DETECTED;
-    }
-    else if (current_ir_data.RF)
-    {
-        current_ir_state = R_FIRST_DETECTED;
-    }
-    // * Outer layer (LL, RR) for sharp turns
-    else if (current_ir_data.LL && current_ir_data.LF)
-    {
-        current_ir_state = L_FIRST_SECOND_DETECTED;
-    }
-    else if (current_ir_data.RR && current_ir_data.RF)
-    {
-        current_ir_state = R_FIRST_SECOND_DETECTED;
-    }
-    else if (current_ir_data.LL)
-    {
-        current_ir_state = L_SECOND_DETECTED;
-    }
-    else if (current_ir_data.RR)
-    {
-        current_ir_state = R_SECOND_DETECTED;
-    }
-    // * Outermost layer (LLL, RRR) for extreme turns or corner detection
-    else if (current_ir_data.LLL && current_ir_data.LL)
-    {
-        current_ir_state = L_SECOND_3RD_DETECTED;
-    }
-    else if (current_ir_data.RRR && current_ir_data.RR)
-    {
-        current_ir_state = R_SECOND_3RD_DETECTED;
-    }
-    else if (current_ir_data.LLL)
-    {
-        current_ir_state = L_3RD_DETECTED;
-    }
-    else if (current_ir_data.RRR)
-    {
-        current_ir_state = R_3RD_DETECTED;
-    }
-    else
-    {
-        current_ir_state = NONE;
+    // If no sensors, keep last known position (helps with gaps)
+    
+    // Detect full bar (start/stop line)
+    line_data.full_detected = (current_ir_data.LLL && current_ir_data.RRR);
+    
+    // Update state
+    if (line_data.full_detected) {
+        current_line_state = LINE_FULL;
+    } else if (sensor_count > 0) {
+        current_line_state = LINE_FOLLOWING;
+    } else {
+        current_line_state = LINE_NONE;
     }
 }
 
-// ? IR Init
-static esp_err_t i2c_bus_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_handle_t *dev_handle)
+// ? IR I2C Bus Init (GPIO6/GPIO7)
+static esp_err_t ir_i2c_bus_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_handle_t *dev_handle)
 {
     if (bus_handle == NULL || dev_handle == NULL)
     {
@@ -644,18 +601,19 @@ static esp_err_t i2c_bus_init(i2c_master_bus_handle_t *bus_handle, i2c_master_de
     {
         i2c_master_bus_config_t bus_config = {
             .i2c_port = I2C_NUM_0,
-            .sda_io_num = SDA_PIN,
-            .scl_io_num = SCL_PIN,
+            .sda_io_num = IR_SDA_PIN,   // GPIO7
+            .scl_io_num = IR_SCL_PIN,   // GPIO6
             .clk_source = I2C_CLK_SRC_DEFAULT,
             .glitch_ignore_cnt = 7,
             .flags.enable_internal_pullup = true,
         };
         ESP_ERROR_CHECK(i2c_new_master_bus(&bus_config, bus_handle));
-        ESP_LOGI(TAG, "I2C master bus initialized once (port %d)", bus_config.i2c_port);
+        ESP_LOGI(TAG, "IR I2C bus initialized (port %d, SDA=GPIO%d, SCL=GPIO%d)", 
+                 bus_config.i2c_port, IR_SDA_PIN, IR_SCL_PIN);
     }
     else
     {
-        ESP_LOGI(TAG, "Reusing existing I2C master bus handle");
+        ESP_LOGI(TAG, "Reusing existing IR I2C bus handle");
     }
 
     if (*dev_handle == NULL)
@@ -666,11 +624,41 @@ static esp_err_t i2c_bus_init(i2c_master_bus_handle_t *bus_handle, i2c_master_de
             .scl_speed_hz = I2C_FREQ_HZ,
         };
         ESP_ERROR_CHECK(i2c_master_bus_add_device(*bus_handle, &dev_config, dev_handle));
-        ESP_LOGI(TAG, "IR device added to shared I2C bus (addr 0x%02X)", SENSOR_I2C_ADDRESS);
+        ESP_LOGI(TAG, "IR device added to I2C bus (addr 0x%02X)", SENSOR_I2C_ADDRESS);
     }
     else
     {
         ESP_LOGI(TAG, "IR device handle already initialized; skipping re-add");
+    }
+
+    return ESP_OK;
+}
+
+// ? TCA9555 I2C Bus Init (GPIO8/GPIO9)
+static esp_err_t tca_i2c_bus_init(i2c_master_bus_handle_t *bus_handle)
+{
+    if (bus_handle == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (*bus_handle == NULL)
+    {
+        i2c_master_bus_config_t bus_config = {
+            .i2c_port = I2C_NUM_1,
+            .sda_io_num = TCA_SDA_PIN,   // GPIO8
+            .scl_io_num = TCA_SCL_PIN,   // GPIO9
+            .clk_source = I2C_CLK_SRC_DEFAULT,
+            .glitch_ignore_cnt = 7,
+            .flags.enable_internal_pullup = true,
+        };
+        ESP_ERROR_CHECK(i2c_new_master_bus(&bus_config, bus_handle));
+        ESP_LOGI(TAG, "TCA9555 I2C bus initialized (port %d, SDA=GPIO%d, SCL=GPIO%d)", 
+                 bus_config.i2c_port, TCA_SDA_PIN, TCA_SCL_PIN);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Reusing existing TCA9555 I2C bus handle");
     }
 
     return ESP_OK;
@@ -779,190 +767,228 @@ static void stopMotors()
 }
 // ? Motor Movement Control END
 
-// ! Motor Control based on IR State
+// ! Manual Control Task
+void manual_control_task(void *pvParameters)
+{
+    TabletData data;
+    ESP_LOGI(TAG, "Manual Control Task Started");
+    
+    // Joystick processing parameters
+    const float DEADZONE = 0.15f;      // 15% 死区，忽略中心附近的微小抖动
+    const float MAX_SPEED = 1.0f;      // 最大速度限制为70%，降低整体灵敏度
+    const float CURVE_EXP = 2.0f;      // 指数曲线，让小幅度移动更精细
+    
+    while (1)
+    {
+        // Block until new data arrives
+        if (xQueueReceive(tablet_queue, &data, portMAX_DELAY) == pdTRUE)
+        {
+            // ? Manual Control Mode Movement START
+            // * Map joystick to mecanum wheel translation
+            // * X: 0x00(Left) <- 0x7F(Center) -> 0xFF(Right) => vr (rotational) 实际是旋转
+            // * Y: 0x00(Forward) <- 0x7F(Center) -> 0xFF(Backward) => vy (longitudinal)
+            // * R: 0x00(Left) <- 0x7F(Center) -> 0xFF(Right) => vx (lateral) 实际是平移
+            
+            float raw_vx = ((float)data.r_value - 127.0f) / 127.0f;  // ! R杆 -> 平移
+            float raw_vy = (127.0f - (float)data.y_value) / 127.0f;
+            float raw_vr = ((float)data.x_value - 127.0f) / 127.0f;  // ! X杆 -> 旋转
+            
+            // 应用死区处理和非线性曲线
+            float processed_vx = 0.0f, processed_vy = 0.0f, processed_vr = 0.0f;
+            
+            if (fabsf(raw_vx) > DEADZONE) {
+                float sign = (raw_vx >= 0) ? 1.0f : -1.0f;
+                float normalized = (fabsf(raw_vx) - DEADZONE) / (1.0f - DEADZONE);
+                processed_vx = sign * powf(normalized, CURVE_EXP) * MAX_SPEED;
+            }
+            
+            if (fabsf(raw_vy) > DEADZONE) {
+                float sign = (raw_vy >= 0) ? 1.0f : -1.0f;
+                float normalized = (fabsf(raw_vy) - DEADZONE) / (1.0f - DEADZONE);
+                processed_vy = sign * powf(normalized, CURVE_EXP) * MAX_SPEED;
+            }
+            
+            if (fabsf(raw_vr) > DEADZONE) {
+                float sign = (raw_vr >= 0) ? 1.0f : -1.0f;
+                float normalized = (fabsf(raw_vr) - DEADZONE) / (1.0f - DEADZONE);
+                processed_vr = sign * powf(normalized, CURVE_EXP) * MAX_SPEED * 0.85f;
+            }
+            
+            mecanum.vx = processed_vx;
+            mecanum.vy = processed_vy;
+            mecanum.vr = processed_vr;
+            mecanum_move((MotorGroup*)&mecanum, 1.0f);
+            // ? Manual Control Mode Movement END
+
+            // todo: Lifting Arm Control START
+            uint16_t lifting_raw = data.lifting_arm_value;
+            const uint16_t lifting_max_input = 225;
+            if (lifting_raw > lifting_max_input)
+            {
+                lifting_raw = lifting_max_input;
+            }
+            uint32_t pulse_range = SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US;
+            uint32_t pulse_us = SERVO_MIN_PULSE_US + ((uint32_t)lifting_raw * pulse_range) / lifting_max_input;
+            uint16_t lift_duty = servo_duty_from_pulse_us(pulse_us);
+
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, lift_duty);
+            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
+            // ? Lifting Arm Control END
+
+            // todo: Mechanical Claw Control START
+            uint8_t claw_switch = data.mclaw_switch;
+            uint16_t claw_target_deg = claw_switch ? CLAW_OPEN_DEG : 0;
+            if (claw_target_deg > SERVO_FULL_RANGE_DEG)
+            {
+                claw_target_deg = SERVO_FULL_RANGE_DEG;
+            }
+            uint32_t claw_pulse_range = SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US;
+            uint32_t claw_pulse_us = SERVO_MIN_PULSE_US + ((uint32_t)claw_target_deg * claw_pulse_range) / SERVO_FULL_RANGE_DEG;
+            uint16_t claw_duty = servo_duty_from_pulse_us(claw_pulse_us);
+
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, claw_duty);
+            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
+            // ? Mechanical Claw Control END
+        }
+    }
+}
+
+// ! Motor Control based on IR State - PD Controller
 void mtr_ctrl_ir(void *args)
 {
     current_mode = CONTROL_MODE_AUTO;
-    bool init_flag = false;
-    IRState state;
-    IRState lastState = NONE;
+    LineState state;
+    LineState lastState = LINE_NONE;
+    
+    // For detecting full bar transitions
+    bool was_full = false;
+    
+    // Timeout counter for line loss recovery
+    int line_lost_counter = 0;
+    const int LINE_LOST_TIMEOUT = 700;  // 700 * 2ms = 1400ms before stopping
+    
     while (1)
     {
-        if (init_flag)
-        {
-            lastState = state;
-        }
-        state = current_ir_state;
-        init_flag = true;
+        state = current_line_state;
         
-        // Only update motor control when state changes
-        if (state != lastState)
+        switch (state)
         {
-            switch (state)
-            {
-            case NONE:
-                // Stop all motors
+        case LINE_NONE:
+            // Line lost - use last known position to try to recover
+            line_lost_counter++;
+            if (line_lost_counter < LINE_LOST_TIMEOUT) {
+                // Try to turn towards last known position (use vx for rotation)
+                float recovery_turn = (line_data.last_position < 0) ? 0.5f : -0.5f;  // 方向反转
+                mecanum.vx = recovery_turn;  // 旋转纠正
+                mecanum.vy = LINE_BASE_SPEED * 0.3f;  // Slow forward
+                mecanum.vr = 0.0f;
+                mecanum_move((MotorGroup*)&mecanum, 0.6f);
+            } else {
+                // Timeout - stop motors
                 stopMotors();
-                break;
-            case BOTH_FORWARD:
-                // Move forward
-                moveForwardFast();
-                break;
-            case ONLY_L_FORWARD:
-                // Adjust to the left
-                sharpTurnLeft(0.85);
-                break;
-            case ONLY_R_FORWARD:
-                // Adjust to the right
-                sharpTurnRight(0.85);
-                break;
-            case L_MED_DETECTED:
-                // Slight left adjustment
-                slightTurnLeft();
-                break;
-            case R_MED_DETECTED:
-                // Slight right adjustment
-                slightTurnRight();
-                break;
-            case L_FIRST_DETECTED:
-                // Sharp left turn
-                sharpTurnLeft(1.0);
-                break;
-            case R_FIRST_DETECTED:
-                // Sharp right turn
-                sharpTurnRight(1.0);
-                break;
-            case L_SECOND_DETECTED:
-                // Very sharp left turn
-                sharpTurnLeft(1.35);
-                break;
-            case R_SECOND_DETECTED:
-                // Very sharp right turn
-                sharpTurnRight(1.35);
-                break;
-            case L_FIRST_SECOND_DETECTED:
-                // Strong left correction
-                sharpTurnLeft(1.2);
-                break;
-            case R_FIRST_SECOND_DETECTED:
-                // Strong right correction
-                sharpTurnRight(1.2);
-                break;
-            case L_3RD_DETECTED:
-                // Extreme left turn
-                sharpTurnLeft(1.5);
-                break;
-            case R_3RD_DETECTED:
-                // Extreme right turn
-                sharpTurnRight(1.5);
-                break;
-            case L_SECOND_3RD_DETECTED:
-                // Maximum left turn
-                sharpTurnLeft(1.7);
-                break;
-            case R_SECOND_3RD_DETECTED:
-                // Maximum right turn
-                sharpTurnRight(1.7);
-                break;
-            case FULL_DETECTED:
-                // Start Point & Stop Point Sign, deciding whether start or stop
-                if (bar_detected_flag == 0)
-                {
-                    moveForwardFast();
-                }
-                else if (bar_detected_flag == 1)
-                {
-                    stopMotors();
-
-                    // * Switch to Manual Control Mode
-                    current_mode = CONTROL_MODE_MANUAL;
-                    manual_control_active = true;
-
-                    // * Exit the loop
-                    vTaskDelete(NULL);
-                    vTaskDelete(ir_task_handle);
-                    ESP_LOGI(TAG, "Switching to Manual Control Mode, stopping IR and Motor Control Tasks");
-                    // Delete IR I2C Addr
-                    i2c_master_bus_rm_device(ir_dev_handle);
-                    ESP_LOGI(TAG, "IR device removed from I2C bus");
-                }
-                else
-                {
-                    ESP_LOGI(TAG, "Bar Detected Flag too large index!");
-                }
-
-                break;
-            default:
-                // Default action
-                ESP_LOGI(TAG, "Unknown IR State");
-                break;
             }
-        }
-
-        if (init_flag)
-        {
-            if (lastState == FULL_DETECTED && state != FULL_DETECTED)
+            break;
+            
+        case LINE_FOLLOWING:
+            line_lost_counter = 0;  // Reset timeout
+            
+            // PD Controller calculation
+            float error = line_data.position;
+            float derivative = line_data.position - line_data.last_position;
+            
+            // Calculate turn rate (negated for correct direction)
+            float turn_rate = -(LINE_KP * error + LINE_KD * derivative);  // 方向反转
+            
+            // Clamp turn rate
+            if (turn_rate > 1.0f) turn_rate = 1.0f;
+            if (turn_rate < -1.0f) turn_rate = -1.0f;
+            
+            // 根据偏差大小决定是否原地转弯
+            float abs_error = fabsf(error);
+            const float PIVOT_THRESHOLD = 0.25f;  // 偏差超过25%时原地转弯
+            const float RECOVER_THRESHOLD = 0.1f; // 偏差小于10%时恢复直行
+            
+            static bool pivot_mode = false;  // 原地转弯模式标志
+            
+            // 进入原地转弯模式
+            if (abs_error > PIVOT_THRESHOLD) {
+                pivot_mode = true;
+            }
+            // 回正后退出原地转弯模式
+            if (abs_error < RECOVER_THRESHOLD) {
+                pivot_mode = false;
+            }
+            
+            if (pivot_mode) {
+                // 原地转弯：不前进，只旋转
+                mecanum.vx = turn_rate;
+                mecanum.vy = 0.0f;  // 停止前进
+                mecanum.vr = 0.0f;
+                mecanum_move((MotorGroup*)&mecanum, 0.7f);  // 稍微降低转弯速度
+            } else {
+                // 正常巡线：边走边微调
+                mecanum.vx = turn_rate;
+                mecanum.vy = LINE_BASE_SPEED;
+                mecanum.vr = 0.0f;
+                mecanum_move((MotorGroup*)&mecanum, 1.0f);
+            }
+            break;
+            
+        case LINE_FULL:
+            line_lost_counter = 0;
+            
+            // Start Point & Stop Point detection
+            if (bar_detected_flag == 0)
             {
-                bar_detected_flag++;
+                // First bar - just pass through
+                mecanum.vx = 0.0f;
+                mecanum.vy = LINE_BASE_SPEED;
+                mecanum.vr = 0.0f;
+                mecanum_move((MotorGroup*)&mecanum, 1.0f);
             }
-        }
+            else if (bar_detected_flag == 1)
+            {
+                // Second bar - stop and switch to manual
+                stopMotors();
 
-        // Small delay to ensure idle task runs and watchdog is fed
-        vTaskDelay(pdMS_TO_TICKS(5));
+                // Switch to Manual Control Mode
+                current_mode = CONTROL_MODE_MANUAL;
+                manual_control_active = true;
+
+                // Start Manual Control Task
+                xTaskCreate(manual_control_task, "Manual Control Task", 4096, NULL, 3, NULL);
+
+                ESP_LOGI(TAG, "Switching to Manual Control Mode");
+                
+                // Delete IR device and exit
+                vTaskDelete(ir_task_handle);
+                i2c_master_bus_rm_device(ir_dev_handle);
+                ESP_LOGI(TAG, "IR device removed from I2C bus");
+                vTaskDelete(NULL);
+            }
+            break;
+        }
+        
+        // Detect full bar exit for counting
+        if (was_full && state != LINE_FULL) {
+            bar_detected_flag++;
+            ESP_LOGI(TAG, "Bar count: %d", bar_detected_flag);
+        }
+        was_full = (state == LINE_FULL);
+        lastState = state;
+
+        // High frequency control loop - 2ms (500Hz)
+        vTaskDelay(pdMS_TO_TICKS(2));
     }
 }
 
 // ! Tablet Data Callback Handler
 void tablet_data_handler(TabletData data)
 {
-    ESP_LOGI(TAG, "X: %u, Y: %u, R: %u, Lifting: %u, mclawSw: %u",
-             data.x_value, data.y_value, data.r_value, data.lifting_arm_value, data.mclaw_switch);
-
-    // * Only process tablet data in manual mode
-    if (current_mode != CONTROL_MODE_MANUAL)
+    // * Send data to queue to overwrite previous command
+    // ! For real-time control, use xQueueOverwrite to always keep the latest command
+    if (tablet_queue != NULL)
     {
-        ESP_LOGW(TAG, "Tablet data ignored - not in manual mode (current: %d)", current_mode);
-        return;
+        xQueueOverwrite(tablet_queue, &data);
     }
-
-    // ? Manual Control Mode Movement START
-    // * Map joystick to mecanum wheel translation
-    // * X: 0x00(Left) <- 0x7F(Center) -> 0xFF(Right) => vx (lateral)
-    // * Y: 0x00(Backward) <- 0x7F(Center) -> 0xFF(Forward) => vy (longitudinal)
-    // * R: 0x00(CCW) <- 0x7F(Center) -> 0xFF(CW) => vr (rotational)
-    mecanum.vx = ((float)data.x_value - 127.0f) / 127.0f;
-    mecanum.vy = ((float)data.y_value - 127.0f) / 127.0f;
-    mecanum.vr = ((float)data.r_value - 127.0f) / 127.0f;
-    mecanum_move((MotorGroup*)&mecanum, 1.0f);
-    // ? Manual Control Mode Movement END
-
-    // ? Lifting Arm Control START
-    uint16_t lifting_raw = data.lifting_arm_value;
-    const uint16_t lifting_max_input = 225;
-    if (lifting_raw > lifting_max_input)
-    {
-        lifting_raw = lifting_max_input;
-    }
-    uint32_t pulse_range = SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US;
-    uint32_t pulse_us = SERVO_MIN_PULSE_US + ((uint32_t)lifting_raw * pulse_range) / lifting_max_input;
-    uint16_t lift_duty = servo_duty_from_pulse_us(pulse_us);
-
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, lift_duty);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
-    // ? Lifting Arm Control END
-
-    // ? Mechanical Claw Control START
-    uint8_t claw_switch = data.mclaw_switch;
-    uint16_t claw_target_deg = claw_switch ? CLAW_OPEN_DEG : 0;
-    if (claw_target_deg > SERVO_FULL_RANGE_DEG)
-    {
-        claw_target_deg = SERVO_FULL_RANGE_DEG;
-    }
-    uint32_t claw_pulse_range = SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US;
-    uint32_t claw_pulse_us = SERVO_MIN_PULSE_US + ((uint32_t)claw_target_deg * claw_pulse_range) / SERVO_FULL_RANGE_DEG;
-    uint16_t claw_duty = servo_duty_from_pulse_us(claw_pulse_us);
-
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, claw_duty);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
-    // ? Mechanical Claw Control END
 }

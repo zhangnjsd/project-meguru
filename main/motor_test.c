@@ -27,7 +27,7 @@ int device_mtr;
 static void i2c_diagnostic()
 {
     ESP_LOGI(TAG, "=== I2C Diagnostic Start ===");
-    ESP_LOGI(TAG, "SDA Pin: GPIO_%d", SDA_PIN);
+    ESP_LOGI(TAG, "SDA Pin: GPIO_%d", TCA_SDA_PIN);
     ESP_LOGI(TAG, "SCL Pin: GPIO_%d", SCL_PIN);
     ESP_LOGI(TAG, "I2C9555 Address: 0x20");
     ESP_LOGI(TAG, "Motor PWM Pins: FL=%d, FR=%d, BL=%d, BR=%d", 
@@ -88,15 +88,15 @@ void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(500));
     
     // * Initialize Motor Controller via 9555
-    ESP_LOGI(TAG, "Adding I2C9555 device at address 0x40 on SDA=%d, SCL=%d", SDA_PIN, SCL_PIN);
-    device_mtr = i2c9555_add_device(SDA_PIN, SCL_PIN, 0x20, GPIO_NUM_NC, NULL);
+    ESP_LOGI(TAG, "Adding I2C9555 device at address 0x40 on SDA=%d, SCL=%d", TCA_SDA_PIN, SCL_PIN);
+    device_mtr = i2c9555_add_device(TCA_SDA_PIN, SCL_PIN, 0x20, GPIO_NUM_NC, NULL);
     
     if (device_mtr < 0)
     {
         ESP_LOGE(TAG, "Failed to add I2C9555 device! device_mtr = %d", device_mtr);
         ESP_LOGE(TAG, "Possible reasons:");
         ESP_LOGE(TAG, "1. I2C9555 device not responding at address 0x40");
-        ESP_LOGE(TAG, "2. Check SDA (GPIO_%d) and SCL (GPIO_%d) connections", SDA_PIN, SCL_PIN);
+        ESP_LOGE(TAG, "2. Check SDA (GPIO_%d) and SCL (GPIO_%d) connections", TCA_SDA_PIN, SCL_PIN);
         ESP_LOGE(TAG, "3. Verify pull-up resistors on I2C bus");
         ESP_LOGE(TAG, "4. Check power supply to I2C9555");
         
