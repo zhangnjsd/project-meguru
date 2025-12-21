@@ -755,8 +755,8 @@ void manual_control_task(void *pvParameters)
     
     while (1)
     {
-        // Block until new data arrives or timeout (200ms)
-        if (xQueueReceive(tablet_queue, &data, pdMS_TO_TICKS(200)) == pdTRUE)
+        // ; Block until new data arrives or timeout (3000ms)
+        if (xQueueReceive(tablet_queue, &data, pdMS_TO_TICKS(3000)) == pdTRUE)
         {
             // ? Manual Control Mode Movement START
             // * Map joystick to mecanum wheel translation
@@ -833,7 +833,7 @@ void manual_control_task(void *pvParameters)
         }
         else
         {
-            // Timeout - stop motors if no data received for 200ms
+            // Timeout - stop motors if no data received for 3000ms
             stopMotors();
         }
     }
