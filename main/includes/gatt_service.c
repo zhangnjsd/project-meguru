@@ -10,8 +10,11 @@ volatile TabletData tablet_data = {
     0x7F,   // * X-Axis Speed (0x00~0x7F~0xFF)
     0x7F,   // * Y-Axis Speed (0x00~0x7F~0xFF)
     0x7F,   // * Rotation Speed (0x00~0x7F~0xFF)
-    0,      // * Lifting Arm Position (0x00~0xFF)
-    0       // * Mechanical Claw Switch (0x00/0x01)
+    0,      // * Lifting Arm A Position (0x00~0xFF)
+    0,      // * Lifting Arm B Position (0x00~0xFF)
+    0,      // * Lifting Arm C Position (0x00~0xFF)
+    0,      // * Mechanical Claw Position (0x00~0xFF)
+    0       // * Command
 };
 static tablet_data_callback_t data_callback = NULL;
 
@@ -36,12 +39,27 @@ static int controller_usable_cb(
     uint16_t attr_handle,
     struct ble_gatt_access_ctxt *ctxt,
     void *arg);
-static int lifting_arm_cb(
+static int lifting_arm_a_cb(
     uint16_t conn_handle,
     uint16_t attr_handle,
     struct ble_gatt_access_ctxt *ctxt,
     void *arg);
-static int mclaw_switch_cb(
+static int lifting_arm_b_cb(
+    uint16_t conn_handle,
+    uint16_t attr_handle,
+    struct ble_gatt_access_ctxt *ctxt,
+    void *arg);
+static int lifting_arm_c_cb(
+    uint16_t conn_handle,
+    uint16_t attr_handle,
+    struct ble_gatt_access_ctxt *ctxt,
+    void *arg);
+static int mclaw_value_cb(
+    uint16_t conn_handle,
+    uint16_t attr_handle,
+    struct ble_gatt_access_ctxt *ctxt,
+    void *arg);
+static int command_cb(
     uint16_t conn_handle,
     uint16_t attr_handle,
     struct ble_gatt_access_ctxt *ctxt,
@@ -60,9 +78,15 @@ static const ble_uuid128_t r_characteristic_uuid = BLE_UUID128_INIT(0xF4, 0x2E, 
                                                                      0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
 static const ble_uuid128_t controller_usable_characteristic_uuid = BLE_UUID128_INIT(0xE7, 0xA1, 0xC2, 0xB3, 0x11, 0x45, 0x19, 0x19,
                                                                                      0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
-static const ble_uuid128_t lifting_arm_characteristic_uuid = BLE_UUID128_INIT(0xA7, 0xA9, 0xD7, 0xE3, 0x11, 0x45, 0x19, 0x19,
+static const ble_uuid128_t lifting_arm_a_characteristic_uuid = BLE_UUID128_INIT(0xA7, 0xA9, 0xD7, 0xE3, 0x11, 0x45, 0x19, 0x19,
                                                                                      0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
-static const ble_uuid128_t mclaw_switch_characteristic_uuid = BLE_UUID128_INIT(0xE2, 0xD3, 0xD4, 0xC4, 0x11, 0x45, 0x19, 0x19,
+static const ble_uuid128_t lifting_arm_b_characteristic_uuid = BLE_UUID128_INIT(0xA8, 0xA9, 0xD7, 0xE3, 0x11, 0x45, 0x19, 0x19,
+                                                                                     0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
+static const ble_uuid128_t lifting_arm_c_characteristic_uuid = BLE_UUID128_INIT(0xA9, 0xA9, 0xD7, 0xE3, 0x11, 0x45, 0x19, 0x19,
+                                                                                     0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
+static const ble_uuid128_t mclaw_value_characteristic_uuid = BLE_UUID128_INIT(0xE2, 0xD3, 0xD4, 0xC4, 0x11, 0x45, 0x19, 0x19,
+                                                                                     0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
+static const ble_uuid128_t command_characteristic_uuid = BLE_UUID128_INIT(0x91, 0x00, 0x00, 0x00, 0x11, 0x45, 0x19, 0x19,
                                                                                      0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
 
 /* Characters value handler */
@@ -70,8 +94,11 @@ static uint16_t x_handler;
 static uint16_t y_handler;
 static uint16_t r_handler;
 static uint16_t controller_usable_handler;
-static uint16_t lifting_arm_handler;
-static uint16_t mclaw_switch_handler;
+static uint16_t lifting_arm_a_handler;
+static uint16_t lifting_arm_b_handler;
+static uint16_t lifting_arm_c_handler;
+static uint16_t mclaw_value_handler;
+static uint16_t command_handler;
 
 /* Characters define */
 static struct ble_gatt_chr_def tablet_chr[] = {
@@ -100,16 +127,34 @@ static struct ble_gatt_chr_def tablet_chr[] = {
         .val_handle = &controller_usable_handler,
     },
     {
-        .uuid = &lifting_arm_characteristic_uuid.u,
-        .access_cb = lifting_arm_cb,
+        .uuid = &lifting_arm_a_characteristic_uuid.u,
+        .access_cb = lifting_arm_a_cb,
         .flags = BLE_GATT_CHR_F_WRITE,
-        .val_handle = &lifting_arm_handler,
+        .val_handle = &lifting_arm_a_handler,
     },
     {
-        .uuid = &mclaw_switch_characteristic_uuid.u,
-        .access_cb = mclaw_switch_cb,
+        .uuid = &lifting_arm_b_characteristic_uuid.u,
+        .access_cb = lifting_arm_b_cb,
         .flags = BLE_GATT_CHR_F_WRITE,
-        .val_handle = &mclaw_switch_handler,
+        .val_handle = &lifting_arm_b_handler,
+    },
+    {
+        .uuid = &lifting_arm_c_characteristic_uuid.u,
+        .access_cb = lifting_arm_c_cb,
+        .flags = BLE_GATT_CHR_F_WRITE,
+        .val_handle = &lifting_arm_c_handler,
+    },
+    {
+        .uuid = &mclaw_value_characteristic_uuid.u,
+        .access_cb = mclaw_value_cb,
+        .flags = BLE_GATT_CHR_F_WRITE,
+        .val_handle = &mclaw_value_handler,
+    },
+    {
+        .uuid = &command_characteristic_uuid.u,
+        .access_cb = command_cb,
+        .flags = BLE_GATT_CHR_F_WRITE,
+        .val_handle = &command_handler,
     },
     {
         0 // End of characteristics
@@ -307,10 +352,10 @@ static int controller_usable_cb(
         {
             /* Prepare data to be sent */
             struct os_mbuf *om = ctxt->om;
-            /* Return 0x01 if manual mode is active (auto mode exited), otherwise 0x00 */
-            uint8_t data = (current_mode == CONTROL_MODE_MANUAL) ? 0x01 : 0x00;
+            /* Return 0x01 if manual mode is active (auto mode exited) or waiting for start, otherwise 0x00 */
+            uint8_t data = (current_mode == CONTROL_MODE_MANUAL || waiting_for_start) ? 0x01 : 0x00;
             
-            ESP_LOGI(TAG, "Controller Usable Status: %d (mode: %d)", data, current_mode);
+            ESP_LOGI(TAG, "Controller Usable Status: %d (mode: %d, waiting: %d)", data, current_mode, waiting_for_start);
 
             /* Append data to the output mbuf */
             int rc = os_mbuf_append(om, &data, sizeof(data));
@@ -334,8 +379,8 @@ static int controller_usable_cb(
     }
     return 0;
 }
-// ! Lifting Arm Up~Down Speed Callback
-static int lifting_arm_cb(
+// ! Lifting Arm A Callback
+static int lifting_arm_a_cb(
     uint16_t conn_handle,
     uint16_t attr_handle,
     struct ble_gatt_access_ctxt *ctxt,
@@ -345,7 +390,7 @@ static int lifting_arm_cb(
     {
     case BLE_GATT_ACCESS_OP_WRITE_CHR:
         /* Verify attribute handle */
-        if (attr_handle == lifting_arm_handler)
+        if (attr_handle == lifting_arm_a_handler)
         {
             uint16_t data_len = OS_MBUF_PKTLEN(ctxt->om);
 
@@ -354,9 +399,9 @@ static int lifting_arm_cb(
                 // Little-endian: low byte first, high byte second
                 uint16_t lifting_val = ctxt->om->om_data[0] | (ctxt->om->om_data[1] << 8);
 
-                tablet_data.lifting_arm_value = lifting_val;
+                tablet_data.lifting_arm_a = lifting_val;
 
-                ESP_LOGI(TAG, "Received Lifting attitude value: %u", lifting_val);
+                ESP_LOGI(TAG, "Received Lifting Arm A value: %u", lifting_val);
 
                 if (data_callback != NULL)
                 {
@@ -365,7 +410,7 @@ static int lifting_arm_cb(
             }
             else
             {
-                ESP_LOGW(TAG, "Lifting attitude length too short: %d", data_len);
+                ESP_LOGW(TAG, "Lifting Arm A length too short: %d", data_len);
             }
         }
         else
@@ -382,8 +427,9 @@ static int lifting_arm_cb(
     }
     return 0;
 }
-// ! Mechanical Claw Switch Callback
-static int mclaw_switch_cb(
+
+// ! Lifting Arm B Callback
+static int lifting_arm_b_cb(
     uint16_t conn_handle,
     uint16_t attr_handle,
     struct ble_gatt_access_ctxt *ctxt,
@@ -393,18 +439,18 @@ static int mclaw_switch_cb(
     {
     case BLE_GATT_ACCESS_OP_WRITE_CHR:
         /* Verify attribute handle */
-        if (attr_handle == mclaw_switch_handler)
+        if (attr_handle == lifting_arm_b_handler)
         {
             uint16_t data_len = OS_MBUF_PKTLEN(ctxt->om);
 
             if (data_len >= 2)
             {
                 // Little-endian: low byte first, high byte second
-                uint16_t mclaw_val = ctxt->om->om_data[0] | (ctxt->om->om_data[1] << 8);
+                uint16_t lifting_val = ctxt->om->om_data[0] | (ctxt->om->om_data[1] << 8);
 
-                tablet_data.mclaw_switch = mclaw_val;
+                tablet_data.lifting_arm_b = lifting_val;
 
-                ESP_LOGI(TAG, "Received Mechanical Claw Switch value: %u", mclaw_val);
+                ESP_LOGI(TAG, "Received Lifting Arm B value: %u", lifting_val);
 
                 if (data_callback != NULL)
                 {
@@ -413,7 +459,152 @@ static int mclaw_switch_cb(
             }
             else
             {
-                ESP_LOGW(TAG, "Mechanical Claw Switch length too short: %d", data_len);
+                ESP_LOGW(TAG, "Lifting Arm B length too short: %d", data_len);
+            }
+        }
+        else
+        {
+            ESP_LOGE(TAG,
+                     "Write request for unknown attribute handle: %d",
+                     attr_handle);
+        }
+        break;
+
+    default:
+        ESP_LOGE(TAG, "Unknown GATT operation: %d", ctxt->op);
+        break;
+    }
+    return 0;
+}
+
+// ! Lifting Arm C Callback
+static int lifting_arm_c_cb(
+    uint16_t conn_handle,
+    uint16_t attr_handle,
+    struct ble_gatt_access_ctxt *ctxt,
+    void *arg)
+{
+    switch (ctxt->op)
+    {
+    case BLE_GATT_ACCESS_OP_WRITE_CHR:
+        /* Verify attribute handle */
+        if (attr_handle == lifting_arm_c_handler)
+        {
+            uint16_t data_len = OS_MBUF_PKTLEN(ctxt->om);
+
+            if (data_len >= 2)
+            {
+                // Little-endian: low byte first, high byte second
+                uint16_t lifting_val = ctxt->om->om_data[0] | (ctxt->om->om_data[1] << 8);
+
+                tablet_data.lifting_arm_c = lifting_val;
+
+                ESP_LOGI(TAG, "Received Lifting Arm C value: %u", lifting_val);
+
+                if (data_callback != NULL)
+                {
+                    data_callback(tablet_data);
+                }
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Lifting Arm C length too short: %d", data_len);
+            }
+        }
+        else
+        {
+            ESP_LOGE(TAG,
+                     "Write request for unknown attribute handle: %d",
+                     attr_handle);
+        }
+        break;
+
+    default:
+        ESP_LOGE(TAG, "Unknown GATT operation: %d", ctxt->op);
+        break;
+    }
+    return 0;
+}
+// ! Mechanical Claw Value Callback
+static int mclaw_value_cb(
+    uint16_t conn_handle,
+    uint16_t attr_handle,
+    struct ble_gatt_access_ctxt *ctxt,
+    void *arg)
+{
+    switch (ctxt->op)
+    {
+    case BLE_GATT_ACCESS_OP_WRITE_CHR:
+        /* Verify attribute handle */
+        if (attr_handle == mclaw_value_handler)
+        {
+            uint16_t data_len = OS_MBUF_PKTLEN(ctxt->om);
+
+            if (data_len >= 2)
+            {
+                // Little-endian: low byte first, high byte second
+                uint16_t mclaw_val = ctxt->om->om_data[0] | (ctxt->om->om_data[1] << 8);
+
+                tablet_data.mclaw_value = mclaw_val;
+
+                ESP_LOGI(TAG, "Received Mechanical Claw value: %u", mclaw_val);
+
+                if (data_callback != NULL)
+                {
+                    data_callback(tablet_data);
+                }
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Mechanical Claw length too short: %d", data_len);
+            }
+        }
+        else
+        {
+            ESP_LOGE(TAG,
+                     "Write request for unknown attribute handle: %d",
+                     attr_handle);
+        }
+        break;
+
+    default:
+        ESP_LOGE(TAG, "Unknown GATT operation: %d", ctxt->op);
+        break;
+    }
+    return 0;
+}
+// ! Command Callback
+static int command_cb(
+    uint16_t conn_handle,
+    uint16_t attr_handle,
+    struct ble_gatt_access_ctxt *ctxt,
+    void *arg)
+{
+    switch (ctxt->op)
+    {
+    case BLE_GATT_ACCESS_OP_WRITE_CHR:
+        /* Verify attribute handle */
+        if (attr_handle == command_handler)
+        {
+            uint16_t data_len = OS_MBUF_PKTLEN(ctxt->om);
+
+            if (data_len >= 1)
+            {
+                // Just read the first byte
+                uint8_t cmd_val = ctxt->om->om_data[0];
+
+                tablet_data.command = cmd_val;
+
+                ESP_LOGI(TAG, "Received Command value: 0x%02X", cmd_val);
+
+                if (data_callback != NULL)
+                {
+                    data_callback(tablet_data);
+                }
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Command length too short: %d", data_len);
             }
         }
         else

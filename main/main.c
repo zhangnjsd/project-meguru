@@ -54,6 +54,27 @@
 #define SENSOR_TRESHOLD_REG 22u                      /* Sensor Threshold Register */
 #define SENSOR_DATA_BYTES (SENSOR_CHANNEL_COUNT * 2) /* Number of Data Bytes */
 
+#define SERVO_LIFT_A_PIN GPIO_NUM_35 /*!< Lifting Arm A Servo Pin */
+#define SERVO_LIFT_B_PIN GPIO_NUM_36 /*!< Lifting Arm B Servo Pin */
+#define SERVO_LIFT_C_PIN GPIO_NUM_37 /*!< Lifting Arm C Servo Pin */
+
+#define SERVO_CLAW_PIN GPIO_NUM_4 /*!< Mechanical Claw Servo Pin */
+
+// ! Servo Pulse Width Ranges (0x00-0xFF maps to these ranges)
+// ! Adjust these values to calibrate the servo positions (range 500us to 2500us)
+#define SERVO_A_MIN_US 500 /*!< Minimum pulse width for Lifting Arm A */
+#define SERVO_A_MAX_US 1620 /*!< Maximum pulse width for Lifting Arm A */
+
+#define SERVO_B_MIN_US 750 /*!< Minimum pulse width for Lifting Arm B */
+#define SERVO_B_MAX_US 2500 /*!< Maximum pulse width for Lifting Arm B */
+
+// todo: Calibrate these values for your specific servos
+#define SERVO_C_MIN_US 500 /*!< Minimum pulse width for Lifting Arm C */
+#define SERVO_C_MAX_US 2500 /*!< Maximum pulse width for Lifting Arm C */
+
+#define SERVO_CLAW_MIN_US 500 /*!< Minimum pulse width for Mechanical Claw */
+#define SERVO_CLAW_MAX_US 780 /*!< Maximum pulse width for Mechanical Claw */
+
 // int device_ir;
 int device_mtr;
 
@@ -65,6 +86,7 @@ TaskHandle_t ir_task_handle = NULL;
 /* ControlMode and current_mode are now defined in gatt_service.h */
 volatile ControlMode current_mode = CONTROL_MODE_AUTO;
 volatile bool manual_control_active = false;
+volatile bool waiting_for_start = true;
 
 // Queue for Tablet Data
 QueueHandle_t tablet_queue = NULL;
@@ -108,18 +130,18 @@ typedef struct
 } IRData;
 
 // ? Motor Data
-/*
-!!! Mecanum Wheel Basic Motion Chart
-!----------------------------------------------------------------------------------------------------------------------------------------------------------------!
-? Motion Pattern            |   Wheel Rotation Relationship                                                                         | Arrow Direction in Diagram
-!----------------------------------------------------------------------------------------------------------------------------------------------------------------!
-* Forward                   |   Four wheels rotate forward at the same speed                                                        | →
-* Backward                  |   Four wheels rotate in opposite directions at the same speed                                         | ←
-* Right Translation         |   Left front/right rear wheel rotates forward, right front/left rear wheel rotates counter-clockwise  | →←
-* Left Translation          |   Right front/left rear wheel rotates forward, left front/right rear wheel rotates counter-clockwise  | ←→
-* Spot Rotation (Forward)   |   Left wheel rotates counter-clockwise, right wheel rotates forward                                   | ↻
-* Spot Reverse Rotation     |   Right wheel rotates counter-clockwise, left wheel rotates forward                                   | ↺
-!----------------------------------------------------------------------------------------------------------------------------------------------------------------!
+/**
+*!!! Mecanum Wheel Basic Motion Chart
+*!----------------------------------------------------------------------------------------------------------------------------------------------------------------!
+*? Motion Pattern            |   Wheel Rotation Relationship                                                                         | Arrow Direction in Diagram
+*!----------------------------------------------------------------------------------------------------------------------------------------------------------------!
+** Forward                   |   Four wheels rotate forward at the same speed                                                        | →
+** Backward                  |   Four wheels rotate in opposite directions at the same speed                                         | ←
+** Right Translation         |   Left front/right rear wheel rotates forward, right front/left rear wheel rotates counter-clockwise  | →←
+** Left Translation          |   Right front/left rear wheel rotates forward, left front/right rear wheel rotates counter-clockwise  | ←→
+** Spot Rotation (Forward)   |   Left wheel rotates counter-clockwise, right wheel rotates forward                                   | ↻
+** Spot Reverse Rotation     |   Right wheel rotates counter-clockwise, left wheel rotates forward                                   | ↺
+*!----------------------------------------------------------------------------------------------------------------------------------------------------------------!
 */
 // * Motor Property
 typedef struct 
@@ -287,30 +309,57 @@ void app_main(void)
     ledc_channel_config(&mtr_bl_channel);
     ledc_channel_config(&mtr_br_channel);
 
-    // * PWM Channel Configuration for Lifting Arm
-    ESP_LOGI(TAG, "Configuring Lifting Arm PWM Channel");
-    ledc_channel_config_t arm_lift_channel = {
+    // * PWM Channel Configuration for Lifting Arm A
+    ESP_LOGI(TAG, "Configuring Lifting Arm A PWM Channel");
+    ledc_channel_config_t arm_lift_a_channel = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .channel = LEDC_CHANNEL_4,
         .timer_sel = LEDC_TIMER_1,
         .intr_type = LEDC_INTR_DISABLE,
-        .gpio_num = ARM_LIFT_PWM,
+        .gpio_num = SERVO_LIFT_A_PIN,
         .duty = 0,
         .hpoint = 0,
     };
-    ledc_channel_config(&arm_lift_channel);
+    ledc_channel_config(&arm_lift_a_channel);
 
     // * PWM Channel Configuration for Mechanical Claw
+    ESP_LOGI(TAG, "Configuring Mechanical Claw PWM Channel");
     ledc_channel_config_t claw_sw_channel = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .channel = LEDC_CHANNEL_5,
         .timer_sel = LEDC_TIMER_1,
         .intr_type = LEDC_INTR_DISABLE,
-        .gpio_num = CLAW_SW_PWM,
+        .gpio_num = SERVO_CLAW_PIN,
         .duty = 0,
         .hpoint = 0,
     };
     ledc_channel_config(&claw_sw_channel);
+
+    // * PWM Channel Configuration for Lifting Arm B
+    ESP_LOGI(TAG, "Configuring Lifting Arm B PWM Channel");
+    ledc_channel_config_t arm_lift_b_channel = {
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel = LEDC_CHANNEL_6,
+        .timer_sel = LEDC_TIMER_1,
+        .intr_type = LEDC_INTR_DISABLE,
+        .gpio_num = SERVO_LIFT_B_PIN,
+        .duty = 0,
+        .hpoint = 0,
+    };
+    ledc_channel_config(&arm_lift_b_channel);
+
+    // * PWM Channel Configuration for Lifting Arm C
+    ESP_LOGI(TAG, "Configuring Lifting Arm C PWM Channel");
+    ledc_channel_config_t arm_lift_c_channel = {
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel = LEDC_CHANNEL_7,
+        .timer_sel = LEDC_TIMER_1,
+        .intr_type = LEDC_INTR_DISABLE,
+        .gpio_num = SERVO_LIFT_C_PIN,
+        .duty = 0,
+        .hpoint = 0,
+    };
+    ledc_channel_config(&arm_lift_c_channel);
 
     // ? BLE Handler START
     ESP_LOGI(TAG, "Initializing NimBLE Stack");
@@ -373,40 +422,47 @@ volatile MotorGroup mecanum = {
 
 // ? Motor Controller
 esp_err_t mtr_spd_setting(MotorGroup* motor) {
-    //// ERROR?
-    esp_err_t err;
+    esp_err_t err = ESP_OK;
+    uint16_t port_data = 0;
 
-    // * FL
-    err = i2c9555pin_write(device_mtr, motor->FrontL.in1_pin, motor->FrontL.in1_level);
-    err = i2c9555pin_write(device_mtr, motor->FrontL.in2_pin, motor->FrontL.in2_level);
-    err = ledc_set_duty(LEDC_LOW_SPEED_MODE, motor->FrontL.pwm_channel, motor->FrontL.speed);
-    err = ledc_update_duty(LEDC_LOW_SPEED_MODE, motor->FrontL.pwm_channel);
+    // Construct Port 0 data (Motor Direction Pins)
+    // FL
+    if (motor->FrontL.in1_level) port_data |= motor->FrontL.in1_pin;
+    if (motor->FrontL.in2_level) port_data |= motor->FrontL.in2_pin;
+    // FR
+    if (motor->FrontR.in1_level) port_data |= motor->FrontR.in1_pin;
+    if (motor->FrontR.in2_level) port_data |= motor->FrontR.in2_pin;
+    // BL
+    if (motor->BackL.in1_level) port_data |= motor->BackL.in1_pin;
+    if (motor->BackL.in2_level) port_data |= motor->BackL.in2_pin;
+    // BR
+    if (motor->BackR.in1_level) port_data |= motor->BackR.in1_pin;
+    if (motor->BackR.in2_level) port_data |= motor->BackR.in2_pin;
 
-    // * FR
-    err = i2c9555pin_write(device_mtr, motor->FrontR.in1_pin, motor->FrontR.in1_level);
-    err = i2c9555pin_write(device_mtr, motor->FrontR.in2_pin, motor->FrontR.in2_level);
-    err = ledc_set_duty(LEDC_LOW_SPEED_MODE, motor->FrontR.pwm_channel, motor->FrontR.speed);
-    err = ledc_update_duty(LEDC_LOW_SPEED_MODE, motor->FrontR.pwm_channel);
+    // Write all direction pins at once (Port 0 is low byte, Port 1 is high byte)
+    // Register 0x02 is Output Port 0. i2c9555_write_word writes 16 bits starting from reg.
+    // This reduces I2C transactions from 8 (read-modify-write) to 1 (write only).
+    err = i2c9555_write_word(device_mtr, 0x02, port_data);
+    if (err != ESP_OK) return err;
 
-    // * BL
-    err = i2c9555pin_write(device_mtr, motor->BackL.in1_pin, motor->BackL.in1_level);
-    err = i2c9555pin_write(device_mtr, motor->BackL.in2_pin, motor->BackL.in2_level);
-    err = ledc_set_duty(LEDC_LOW_SPEED_MODE, motor->BackL.pwm_channel, motor->BackL.speed);
-    err = ledc_update_duty(LEDC_LOW_SPEED_MODE, motor->BackL.pwm_channel);
+    // Update PWM duties
+    // FL
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, motor->FrontL.pwm_channel, motor->FrontL.speed);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, motor->FrontL.pwm_channel);
 
-    // * BR
-    err = i2c9555pin_write(device_mtr, motor->BackR.in1_pin, motor->BackR.in1_level);
-    err = i2c9555pin_write(device_mtr, motor->BackR.in2_pin, motor->BackR.in2_level);
-    err = ledc_set_duty(LEDC_LOW_SPEED_MODE, motor->BackR.pwm_channel, motor->BackR.speed);
-    err = ledc_update_duty(LEDC_LOW_SPEED_MODE, motor->BackR.pwm_channel);
+    // FR
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, motor->FrontR.pwm_channel, motor->FrontR.speed);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, motor->FrontR.pwm_channel);
 
-    if (err)
-    {
-        return err;
-    } else {
-        return ESP_OK;
-    }
+    // BL
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, motor->BackL.pwm_channel, motor->BackL.speed);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, motor->BackL.pwm_channel);
 
+    // BR
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, motor->BackR.pwm_channel, motor->BackR.speed);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, motor->BackR.pwm_channel);
+
+    return ESP_OK;
 }
 
 // ! IR Module Read Task
@@ -437,83 +493,6 @@ void ir_read_task()
         }
         vTaskDelay(pdMS_TO_TICKS(2));  // 2ms interval = 500Hz sampling rate
     }
-}
-
-// ? Mecanum Wheel Movement Function
-/**
- * @brief Mecanum wheel omnidirectional movement with rotation
- * @param motor Pointer to MotorGroup structure (reads vx, vy, vr from struct)
- * @param mag Speed magnitude multiplier (0.0 ~ 1.0)
- * 
- * Before calling, set motor->vx, motor->vy, motor->vr:
- *   vx: Lateral velocity (-1.0 ~ 1.0, positive = right)
- *   vy: Longitudinal velocity (-1.0 ~ 1.0, positive = forward)
- *   vr: Angular velocity (-1.0 ~ 1.0, positive = clockwise)
- * 
- * ! Mecanum wheel kinematics (O-type configuration):
- * ? FL = Vy - Vx + ω
- * ? FR = Vy + Vx - ω
- * ? BL = Vy + Vx + ω
- * ? BR = Vy - Vx - ω
- */
-static void mecanum_move(MotorGroup* motor, float mag)
-{
-    // Read velocity values from MotorGroup structure
-    float vx = motor->vx;
-    float vy = motor->vy;
-    float omega = motor->vr;
-    
-    // Calculate each wheel speed (-1.0 ~ 1.0) - O-type configuration
-    float fl = vy - vx + omega;
-    float fr = vy + vx - omega;
-    float bl = vy + vx + omega;
-    float br = vy - vx - omega;
-    
-    // Normalize to ensure max value does not exceed 1.0
-    float max_val = fmaxf(fmaxf(fabsf(fl), fabsf(fr)), fmaxf(fabsf(bl), fabsf(br)));
-    if (max_val > 1.0f)
-    {
-        fl /= max_val;
-        fr /= max_val;
-        bl /= max_val;
-        br /= max_val;
-    }
-    
-    // Apply speed magnitude
-    fl *= mag;
-    fr *= mag;
-    bl *= mag;
-    br *= mag;
-    
-    // Helper function to map speed with minimum start threshold
-    // Input: 0~1 float -> Output: 0 or MTR_MIN_START~MTR_FULL_SPD
-    #define MAP_MOTOR_SPEED(speed_val) \
-        (fabsf(speed_val) < MTR_INPUT_DEADZONE ? 0 : \
-         (uint16_t)(MTR_MIN_START + fabsf(speed_val) * (MTR_FULL_SPD - MTR_MIN_START)))
-    
-    // Set front-left wheel
-    motor->FrontL.in1_level = (fl >= 0) ? 1 : 0;
-    motor->FrontL.in2_level = (fl >= 0) ? 0 : 1;
-    motor->FrontL.speed = MAP_MOTOR_SPEED(fl);
-    
-    // Set front-right wheel
-    motor->FrontR.in1_level = (fr >= 0) ? 1 : 0;
-    motor->FrontR.in2_level = (fr >= 0) ? 0 : 1;
-    motor->FrontR.speed = MAP_MOTOR_SPEED(fr);
-    
-    // Set back-left wheel
-    motor->BackL.in1_level = (bl >= 0) ? 1 : 0;
-    motor->BackL.in2_level = (bl >= 0) ? 0 : 1;
-    motor->BackL.speed = MAP_MOTOR_SPEED(bl);
-    
-    // Set back-right wheel
-    motor->BackR.in1_level = (br >= 0) ? 1 : 0;
-    motor->BackR.in2_level = (br >= 0) ? 0 : 1;
-    motor->BackR.speed = MAP_MOTOR_SPEED(br);
-    
-    #undef MAP_MOTOR_SPEED
-    
-    mtr_spd_setting(motor);
 }
 
 // ! IR Module Input Callback
@@ -676,85 +655,81 @@ static esp_err_t read_sensor_registers(i2c_master_dev_handle_t dev_handle, uint8
 }
 
 // ? Motor Movement Control START
-static void moveForwardFast()
+// ? Mecanum Wheel Movement Function
+/**
+ * @brief Mecanum wheel omnidirectional movement with rotation
+ * @param motor Pointer to MotorGroup structure (reads vx, vy, vr from struct)
+ * @param mag Speed magnitude multiplier (0.0 ~ 1.0)
+ * 
+ * Before calling, set motor->vx, motor->vy, motor->vr:
+ *   vx: Lateral velocity (-1.0 ~ 1.0, positive = right)
+ *   vy: Longitudinal velocity (-1.0 ~ 1.0, positive = forward)
+ *   vr: Angular velocity (-1.0 ~ 1.0, positive = clockwise)
+ * 
+ * ! Mecanum wheel kinematics (X-type configuration):
+ * ? FL = Vy + Vx + ω
+ * ? FR = Vy - Vx - ω
+ * ? BL = Vy - Vx + ω
+ * ? BR = Vy + Vx - ω
+ */
+static void mecanum_move(MotorGroup* motor, float mag)
 {
-    // vx=0, vy=1 (forward), vr=0
-    mecanum.vx = 0.0f;
-    mecanum.vy = 1.0f;
-    mecanum.vr = 0.0f;
-    mecanum_move((MotorGroup*)&mecanum, 1.0f);
-}
-
-static void sharpTurnLeft(float mag)
-{
-    // vx=0, vy=0, vr=-1 (counter-clockwise)
-    mecanum.vx = 0.0f;
-    mecanum.vy = 0.0f;
-    mecanum.vr = -1.0f;
-    mecanum_move((MotorGroup*)&mecanum, mag * 0.5f);
-}
-
-static void sharpTurnRight(float mag)
-{
-    // vx=0, vy=0, vr=1 (clockwise)
-    mecanum.vx = 0.0f;
-    mecanum.vy = 0.0f;
-    mecanum.vr = 1.0f;
-    mecanum_move((MotorGroup*)&mecanum, mag * 0.5f);
-}
-
-static void slightTurnLeft()
-{
-    // vx=0, vy=1 (forward), vr=-0.3 (slight counter-clockwise)
-    mecanum.vx = 0.0f;
-    mecanum.vy = 1.0f;
-    mecanum.vr = -0.3f;
-    mecanum_move((MotorGroup*)&mecanum, 0.8f);
-}
-
-static void slightTurnRight()
-{
-    // vx=0, vy=1 (forward), vr=0.3 (slight clockwise)
-    mecanum.vx = 0.0f;
-    mecanum.vy = 1.0f;
-    mecanum.vr = 0.3f;
-    mecanum_move((MotorGroup*)&mecanum, 0.8f);
-}
-
-static void shift_left(float mag)
-{
-    // vx=-1 (left), vy=0, vr=0
-    mecanum.vx = -1.0f;
-    mecanum.vy = 0.0f;
-    mecanum.vr = 0.0f;
-    mecanum_move((MotorGroup*)&mecanum, mag * 0.5f);
-}
-
-static void shift_right(float mag)
-{
-    // vx=1 (right), vy=0, vr=0
-    mecanum.vx = 1.0f;
-    mecanum.vy = 0.0f;
-    mecanum.vr = 0.0f;
-    mecanum_move((MotorGroup*)&mecanum, mag * 0.5f);
-}
-
-static void rotate_clockwise(float mag)
-{
-    // vx=0, vy=0, vr=1 (clockwise)
-    mecanum.vx = 0.0f;
-    mecanum.vy = 0.0f;
-    mecanum.vr = 1.0f;
-    mecanum_move((MotorGroup*)&mecanum, mag * 0.5f);
-}
-
-static void rotate_counterclockwise(float mag)
-{
-    // vx=0, vy=0, vr=-1 (counter-clockwise)
-    mecanum.vx = 0.0f;
-    mecanum.vy = 0.0f;
-    mecanum.vr = -1.0f;
-    mecanum_move((MotorGroup*)&mecanum, mag * 0.5f);
+    // Read velocity values from MotorGroup structure
+    float vx = motor->vx;
+    float vy = motor->vy;
+    float omega = motor->vr;
+    
+    // Calculate each wheel speed (-1.0 ~ 1.0) - X-type configuration
+    float fl = vy + vx + omega;
+    float fr = vy - vx - omega;
+    float bl = vy - vx + omega;
+    float br = vy + vx - omega;
+    
+    // Normalize to ensure max value does not exceed 1.0
+    float max_val = fmaxf(fmaxf(fabsf(fl), fabsf(fr)), fmaxf(fabsf(bl), fabsf(br)));
+    if (max_val > 1.0f)
+    {
+        fl /= max_val;
+        fr /= max_val;
+        bl /= max_val;
+        br /= max_val;
+    }
+    
+    // Apply speed magnitude
+    fl *= mag;
+    fr *= mag;
+    bl *= mag;
+    br *= mag;
+    
+    // Helper function to map speed with minimum start threshold
+    // Input: 0~1 float -> Output: 0 or MTR_MIN_START~MTR_FULL_SPD
+    #define MAP_MOTOR_SPEED(speed_val) \
+        (fabsf(speed_val) < MTR_INPUT_DEADZONE ? 0 : \
+         (uint16_t)(MTR_MIN_START + fabsf(speed_val) * (MTR_FULL_SPD - MTR_MIN_START)))
+    
+    // Set front-left wheel
+    motor->FrontL.in1_level = (fl >= 0) ? 1 : 0;
+    motor->FrontL.in2_level = (fl >= 0) ? 0 : 1;
+    motor->FrontL.speed = MAP_MOTOR_SPEED(fl);
+    
+    // Set front-right wheel
+    motor->FrontR.in1_level = (fr >= 0) ? 1 : 0;
+    motor->FrontR.in2_level = (fr >= 0) ? 0 : 1;
+    motor->FrontR.speed = MAP_MOTOR_SPEED(fr);
+    
+    // Set back-left wheel
+    motor->BackL.in1_level = (bl >= 0) ? 1 : 0;
+    motor->BackL.in2_level = (bl >= 0) ? 0 : 1;
+    motor->BackL.speed = MAP_MOTOR_SPEED(bl);
+    
+    // Set back-right wheel
+    motor->BackR.in1_level = (br >= 0) ? 1 : 0;
+    motor->BackR.in2_level = (br >= 0) ? 0 : 1;
+    motor->BackR.speed = MAP_MOTOR_SPEED(br);
+    
+    #undef MAP_MOTOR_SPEED
+    
+    mtr_spd_setting(motor);
 }
 
 static void stopMotors()
@@ -773,27 +748,27 @@ void manual_control_task(void *pvParameters)
     TabletData data;
     ESP_LOGI(TAG, "Manual Control Task Started");
     
-    // Joystick processing parameters
-    const float DEADZONE = 0.15f;      // 15% 死区，忽略中心附近的微小抖动
-    const float MAX_SPEED = 1.0f;      // 最大速度限制为70%，降低整体灵敏度
-    const float CURVE_EXP = 2.0f;      // 指数曲线，让小幅度移动更精细
+    // ! Joystick processing parameters
+    const float DEADZONE = 0.15f;
+    const float MAX_SPEED = 1.0f;
+    const float CURVE_EXP = 2.0f;
     
     while (1)
     {
-        // Block until new data arrives
-        if (xQueueReceive(tablet_queue, &data, portMAX_DELAY) == pdTRUE)
+        // Block until new data arrives or timeout (200ms)
+        if (xQueueReceive(tablet_queue, &data, pdMS_TO_TICKS(200)) == pdTRUE)
         {
             // ? Manual Control Mode Movement START
             // * Map joystick to mecanum wheel translation
-            // * X: 0x00(Left) <- 0x7F(Center) -> 0xFF(Right) => vr (rotational) 实际是旋转
+            // * X: 0x00(Left) <- 0x7F(Center) -> 0xFF(Right) => vx (lateral)
             // * Y: 0x00(Forward) <- 0x7F(Center) -> 0xFF(Backward) => vy (longitudinal)
-            // * R: 0x00(Left) <- 0x7F(Center) -> 0xFF(Right) => vx (lateral) 实际是平移
+            // * R: 0x00(Left) <- 0x7F(Center) -> 0xFF(Right) => vr (rotation)
             
-            float raw_vx = ((float)data.r_value - 127.0f) / 127.0f;  // ! R杆 -> 平移
+            float raw_vx = ((float)data.x_value - 127.0f) / 127.0f; 
             float raw_vy = (127.0f - (float)data.y_value) / 127.0f;
-            float raw_vr = ((float)data.x_value - 127.0f) / 127.0f;  // ! X杆 -> 旋转
+            float raw_vr = ((float)data.r_value - 127.0f) / 127.0f; 
             
-            // 应用死区处理和非线性曲线
+            // * Deadzone and exponential curve processing
             float processed_vx = 0.0f, processed_vy = 0.0f, processed_vr = 0.0f;
             
             if (fabsf(raw_vx) > DEADZONE) {
@@ -820,35 +795,46 @@ void manual_control_task(void *pvParameters)
             mecanum_move((MotorGroup*)&mecanum, 1.0f);
             // ? Manual Control Mode Movement END
 
-            // todo: Lifting Arm Control START
-            uint16_t lifting_raw = data.lifting_arm_value;
-            const uint16_t lifting_max_input = 225;
-            if (lifting_raw > lifting_max_input)
-            {
-                lifting_raw = lifting_max_input;
-            }
-            uint32_t pulse_range = SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US;
-            uint32_t pulse_us = SERVO_MIN_PULSE_US + ((uint32_t)lifting_raw * pulse_range) / lifting_max_input;
-            uint16_t lift_duty = servo_duty_from_pulse_us(pulse_us);
-
-            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, lift_duty);
+            // ? Lifting Arm Control START
+            // * Lifting Arm A
+            uint16_t lifting_a_raw = data.lifting_arm_a;
+            uint32_t pulse_range_a = SERVO_A_MAX_US - SERVO_A_MIN_US;
+            uint32_t pulse_us_a = SERVO_A_MIN_US + ((uint32_t)lifting_a_raw * pulse_range_a) / 255;
+            uint16_t lift_duty_a = servo_duty_from_pulse_us(pulse_us_a);
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, lift_duty_a);
             ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
+
+            // * Lifting Arm B
+            uint16_t lifting_b_raw = data.lifting_arm_b;
+            uint32_t pulse_range_b = SERVO_B_MAX_US - SERVO_B_MIN_US;
+            uint32_t pulse_us_b = SERVO_B_MIN_US + ((uint32_t)lifting_b_raw * pulse_range_b) / 255;
+            uint16_t lift_duty_b = servo_duty_from_pulse_us(pulse_us_b);
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_6, lift_duty_b);
+            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_6);
+
+            // * Lifting Arm C
+            uint16_t lifting_c_raw = data.lifting_arm_c;
+            uint32_t pulse_range_c = SERVO_C_MAX_US - SERVO_C_MIN_US;
+            uint32_t pulse_us_c = SERVO_C_MIN_US + ((uint32_t)lifting_c_raw * pulse_range_c) / 255;
+            uint16_t lift_duty_c = servo_duty_from_pulse_us(pulse_us_c);
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7, lift_duty_c);
+            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7);
             // ? Lifting Arm Control END
 
-            // todo: Mechanical Claw Control START
-            uint8_t claw_switch = data.mclaw_switch;
-            uint16_t claw_target_deg = claw_switch ? CLAW_OPEN_DEG : 0;
-            if (claw_target_deg > SERVO_FULL_RANGE_DEG)
-            {
-                claw_target_deg = SERVO_FULL_RANGE_DEG;
-            }
-            uint32_t claw_pulse_range = SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US;
-            uint32_t claw_pulse_us = SERVO_MIN_PULSE_US + ((uint32_t)claw_target_deg * claw_pulse_range) / SERVO_FULL_RANGE_DEG;
-            uint16_t claw_duty = servo_duty_from_pulse_us(claw_pulse_us);
+            // ? Mechanical Claw Control START
+            uint16_t claw_raw = data.mclaw_value;
+            uint32_t pulse_range_claw = SERVO_CLAW_MAX_US - SERVO_CLAW_MIN_US;
+            uint32_t pulse_us_claw = SERVO_CLAW_MIN_US + ((uint32_t)claw_raw * pulse_range_claw) / 255;
+            uint16_t claw_duty = servo_duty_from_pulse_us(pulse_us_claw);
 
             ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, claw_duty);
             ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
             // ? Mechanical Claw Control END
+        }
+        else
+        {
+            // Timeout - stop motors if no data received for 200ms
+            stopMotors();
         }
     }
 }
@@ -858,7 +844,6 @@ void mtr_ctrl_ir(void *args)
 {
     current_mode = CONTROL_MODE_AUTO;
     LineState state;
-    LineState lastState = LINE_NONE;
     
     // For detecting full bar transitions
     bool was_full = false;
@@ -866,9 +851,44 @@ void mtr_ctrl_ir(void *args)
     // Timeout counter for line loss recovery
     int line_lost_counter = 0;
     const int LINE_LOST_TIMEOUT = 700;  // 700 * 2ms = 1400ms before stopping
+
+    // Application State for Start Logic
+    typedef enum {
+        APP_WAIT_START,
+        APP_SEARCHING,
+        APP_RUNNING
+    } AppState;
+    AppState app_state = APP_WAIT_START;
     
     while (1)
     {
+        if (app_state == APP_WAIT_START) {
+            waiting_for_start = true;
+            stopMotors();
+            if (tablet_data.command == 0x91) {
+                ESP_LOGI(TAG, "Start command received! Searching for line...");
+                app_state = APP_SEARCHING;
+                waiting_for_start = false;
+                tablet_data.command = 0;
+            }
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+
+        if (app_state == APP_SEARCHING) {
+            mecanum.vx = 0.0f;
+            mecanum.vy = LINE_BASE_SPEED * 0.6f;
+            mecanum.vr = 0.0f;
+            mecanum_move((MotorGroup*)&mecanum, 1.0f);
+
+            if (current_line_state == LINE_FOLLOWING || current_line_state == LINE_FULL) {
+                ESP_LOGI(TAG, "Line found! Switching to auto mode.");
+                app_state = APP_RUNNING;
+            }
+            vTaskDelay(pdMS_TO_TICKS(2));
+            continue;
+        }
+
         state = current_line_state;
         
         switch (state)
@@ -877,11 +897,11 @@ void mtr_ctrl_ir(void *args)
             // Line lost - use last known position to try to recover
             line_lost_counter++;
             if (line_lost_counter < LINE_LOST_TIMEOUT) {
-                // Try to turn towards last known position (use vx for rotation)
-                float recovery_turn = (line_data.last_position < 0) ? 0.5f : -0.5f;  // 方向反转
-                mecanum.vx = recovery_turn;  // 旋转纠正
+                // Try to turn towards last known position (use vr for rotation)
+                float recovery_turn = (line_data.last_position < 0) ? -0.5f : 0.5f;
+                mecanum.vx = 0.0f;
                 mecanum.vy = LINE_BASE_SPEED * 0.3f;  // Slow forward
-                mecanum.vr = 0.0f;
+                mecanum.vr = recovery_turn;
                 mecanum_move((MotorGroup*)&mecanum, 0.6f);
             } else {
                 // Timeout - stop motors
@@ -896,43 +916,41 @@ void mtr_ctrl_ir(void *args)
             float error = line_data.position;
             float derivative = line_data.position - line_data.last_position;
             
-            // Calculate turn rate (negated for correct direction)
-            float turn_rate = -(LINE_KP * error + LINE_KD * derivative);  // 方向反转
+            // Calculate turn rate
+            float turn_rate = (LINE_KP * error + LINE_KD * derivative);
             
             // Clamp turn rate
             if (turn_rate > 1.0f) turn_rate = 1.0f;
             if (turn_rate < -1.0f) turn_rate = -1.0f;
             
-            // 根据偏差大小决定是否原地转弯
+            // * Decide whether to pivot or move forward
             float abs_error = fabsf(error);
-            const float PIVOT_THRESHOLD = 0.25f;  // 偏差超过25%时原地转弯
-            const float RECOVER_THRESHOLD = 0.1f; // 偏差小于10%时恢复直行
+            const float PIVOT_THRESHOLD = 0.25f;  // Locally rotate
+            const float RECOVER_THRESHOLD = 0.1f; // Recover to normal(bias <= 10%)
             
-            static bool pivot_mode = false;  // 原地转弯模式标志
+            static bool pivot_mode = false;  // Locally rotate mode flag
             
-            // 进入原地转弯模式
+            // ? Locally rotate mode START
             if (abs_error > PIVOT_THRESHOLD) {
                 pivot_mode = true;
             }
-            // 回正后退出原地转弯模式
             if (abs_error < RECOVER_THRESHOLD) {
                 pivot_mode = false;
             }
             
             if (pivot_mode) {
-                // 原地转弯：不前进，只旋转
-                mecanum.vx = turn_rate;
-                mecanum.vy = 0.0f;  // 停止前进
-                mecanum.vr = 0.0f;
-                mecanum_move((MotorGroup*)&mecanum, 0.7f);  // 稍微降低转弯速度
+                mecanum.vx = 0;
+                mecanum.vy = 0.0f;
+                mecanum.vr = turn_rate;
+                mecanum_move((MotorGroup*)&mecanum, 0.7f);
             } else {
-                // 正常巡线：边走边微调
-                mecanum.vx = turn_rate;
+                mecanum.vx = 0;
                 mecanum.vy = LINE_BASE_SPEED;
-                mecanum.vr = 0.0f;
+                mecanum.vr = turn_rate;
                 mecanum_move((MotorGroup*)&mecanum, 1.0f);
             }
             break;
+            // ? Locally rotate mode END
             
         case LINE_FULL:
             line_lost_counter = 0;
@@ -975,7 +993,6 @@ void mtr_ctrl_ir(void *args)
             ESP_LOGI(TAG, "Bar count: %d", bar_detected_flag);
         }
         was_full = (state == LINE_FULL);
-        lastState = state;
 
         // High frequency control loop - 2ms (500Hz)
         vTaskDelay(pdMS_TO_TICKS(2));
