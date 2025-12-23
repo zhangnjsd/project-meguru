@@ -5,6 +5,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "driver/ledc.h"
+#include "driver/mcpwm_prelude.h"
 #include <math.h>
 
 #include "includes/nimble.h"
@@ -78,6 +79,12 @@
 // int device_ir;
 int device_mtr;
 
+// MCPWM Handles for Motors
+mcpwm_cmpr_handle_t mtr_cmpr_fl = NULL;
+mcpwm_cmpr_handle_t mtr_cmpr_fr = NULL;
+mcpwm_cmpr_handle_t mtr_cmpr_bl = NULL;
+mcpwm_cmpr_handle_t mtr_cmpr_br = NULL;
+
 int bar_detected_flag = 0;
 
 // IR _xTask
@@ -146,7 +153,7 @@ typedef struct
 // * Motor Property
 typedef struct 
 {
-    ledc_channel_t pwm_channel;
+    mcpwm_cmpr_handle_t cmpr_handle;
     uint16_t speed;
     gpio_num_t in1_pin;
     gpio_num_t in2_pin;
@@ -245,16 +252,73 @@ void app_main(void)
     ESP_LOGI(TAG, "Configuring Motor Controller IO Expander");
     i2c9555_ioconfig(device_mtr, 0x0000);
 
-    // * PWM Initialization
-    ESP_LOGI(TAG, "Configuring LEDC PWM Timers and Channels");
-    ledc_timer_config_t pwm_timer = {
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .timer_num = LEDC_TIMER_0,
-        .duty_resolution = LEDC_TIMER_11_BIT, // 2048 levels
-        .freq_hz = 20000,  // 20kHz PWM frequency for quieter motor operation
-        .clk_cfg = LEDC_AUTO_CLK,
+    // * MCPWM Initialization for Motors
+    ESP_LOGI(TAG, "Configuring MCPWM for Motors");
+    mcpwm_timer_handle_t mtr_timer = NULL;
+    mcpwm_timer_config_t mtr_timer_config = {
+        .group_id = 0,
+        .clk_src = MCPWM_TIMER_CLK_SRC_DEFAULT,
+        .resolution_hz = 10000000, // 10MHz, 0.1us per tick
+        .period_ticks = 500,       // 50us period (20kHz)
+        .count_mode = MCPWM_TIMER_COUNT_MODE_UP,
     };
-    ledc_timer_config(&pwm_timer);
+    ESP_ERROR_CHECK(mcpwm_new_timer(&mtr_timer_config, &mtr_timer));
+
+    mcpwm_oper_handle_t mtr_operator = NULL;
+    mcpwm_operator_config_t mtr_operator_config = {
+        .group_id = 0, // operator must be in the same group to the timer
+    };
+    ESP_ERROR_CHECK(mcpwm_new_operator(&mtr_operator_config, &mtr_operator));
+
+    ESP_ERROR_CHECK(mcpwm_operator_connect_timer(mtr_operator, mtr_timer));
+
+    mcpwm_comparator_config_t mtr_comparator_config = {
+        .flags.update_cmp_on_tez = true,
+    };
+    ESP_ERROR_CHECK(mcpwm_new_comparator(mtr_operator, &mtr_comparator_config, &mtr_cmpr_fl));
+    ESP_ERROR_CHECK(mcpwm_new_comparator(mtr_operator, &mtr_comparator_config, &mtr_cmpr_fr));
+    ESP_ERROR_CHECK(mcpwm_new_comparator(mtr_operator, &mtr_comparator_config, &mtr_cmpr_bl));
+    ESP_ERROR_CHECK(mcpwm_new_comparator(mtr_operator, &mtr_comparator_config, &mtr_cmpr_br));
+
+    mcpwm_gen_handle_t mtr_gen_fl = NULL;
+    mcpwm_gen_handle_t mtr_gen_fr = NULL;
+    mcpwm_gen_handle_t mtr_gen_bl = NULL;
+    mcpwm_gen_handle_t mtr_gen_br = NULL;
+
+    mcpwm_generator_config_t mtr_gen_config = {
+        .gen_gpio_num = MTR_FL_PWM,
+    };
+    ESP_ERROR_CHECK(mcpwm_new_generator(mtr_operator, &mtr_gen_config, &mtr_gen_fl));
+    mtr_gen_config.gen_gpio_num = MTR_FR_PWM;
+    ESP_ERROR_CHECK(mcpwm_new_generator(mtr_operator, &mtr_gen_config, &mtr_gen_fr));
+    mtr_gen_config.gen_gpio_num = MTR_BL_PWM;
+    ESP_ERROR_CHECK(mcpwm_new_generator(mtr_operator, &mtr_gen_config, &mtr_gen_bl));
+    mtr_gen_config.gen_gpio_num = MTR_BR_PWM;
+    ESP_ERROR_CHECK(mcpwm_new_generator(mtr_operator, &mtr_gen_config, &mtr_gen_br));
+
+    // Set generator actions: High on timer empty, Low on compare match
+    ESP_ERROR_CHECK(mcpwm_generator_set_action_on_timer_event(mtr_gen_fl,
+                    MCPWM_GEN_TIMER_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, MCPWM_TIMER_EVENT_EMPTY, MCPWM_GEN_ACTION_HIGH)));
+    ESP_ERROR_CHECK(mcpwm_generator_set_action_on_compare_event(mtr_gen_fl,
+                    MCPWM_GEN_COMPARE_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, mtr_cmpr_fl, MCPWM_GEN_ACTION_LOW)));
+
+    ESP_ERROR_CHECK(mcpwm_generator_set_action_on_timer_event(mtr_gen_fr,
+                    MCPWM_GEN_TIMER_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, MCPWM_TIMER_EVENT_EMPTY, MCPWM_GEN_ACTION_HIGH)));
+    ESP_ERROR_CHECK(mcpwm_generator_set_action_on_compare_event(mtr_gen_fr,
+                    MCPWM_GEN_COMPARE_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, mtr_cmpr_fr, MCPWM_GEN_ACTION_LOW)));
+
+    ESP_ERROR_CHECK(mcpwm_generator_set_action_on_timer_event(mtr_gen_bl,
+                    MCPWM_GEN_TIMER_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, MCPWM_TIMER_EVENT_EMPTY, MCPWM_GEN_ACTION_HIGH)));
+    ESP_ERROR_CHECK(mcpwm_generator_set_action_on_compare_event(mtr_gen_bl,
+                    MCPWM_GEN_COMPARE_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, mtr_cmpr_bl, MCPWM_GEN_ACTION_LOW)));
+
+    ESP_ERROR_CHECK(mcpwm_generator_set_action_on_timer_event(mtr_gen_br,
+                    MCPWM_GEN_TIMER_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, MCPWM_TIMER_EVENT_EMPTY, MCPWM_GEN_ACTION_HIGH)));
+    ESP_ERROR_CHECK(mcpwm_generator_set_action_on_compare_event(mtr_gen_br,
+                    MCPWM_GEN_COMPARE_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, mtr_cmpr_br, MCPWM_GEN_ACTION_LOW)));
+
+    ESP_ERROR_CHECK(mcpwm_timer_enable(mtr_timer));
+    ESP_ERROR_CHECK(mcpwm_timer_start_stop(mtr_timer, MCPWM_TIMER_START_NO_STOP));
 
     // * Dedicated servo timer for GPIO4 (Lifting Arm)
     ledc_timer_config_t servo_timer = {
@@ -265,49 +329,6 @@ void app_main(void)
         .clk_cfg = LEDC_AUTO_CLK,
     };
     ledc_timer_config(&servo_timer);
-
-    // * PWM Channel Configuration
-    ledc_channel_config_t mtr_fl_channel = {
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel = LEDC_CHANNEL_0,
-        .timer_sel = LEDC_TIMER_0,
-        .intr_type = LEDC_INTR_DISABLE,
-        .gpio_num = MTR_FL_PWM,
-        .duty = 0,
-        .hpoint = 0,
-    };
-    ledc_channel_config_t mtr_fr_channel = {
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel = LEDC_CHANNEL_1,
-        .timer_sel = LEDC_TIMER_0,
-        .intr_type = LEDC_INTR_DISABLE,
-        .gpio_num = MTR_FR_PWM,
-        .duty = 0,
-        .hpoint = 0,
-    };
-    ledc_channel_config_t mtr_bl_channel = {
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel = LEDC_CHANNEL_2,
-        .timer_sel = LEDC_TIMER_0,
-        .intr_type = LEDC_INTR_DISABLE,
-        .gpio_num = MTR_BL_PWM,
-        .duty = 0,
-        .hpoint = 0,
-    };
-    ledc_channel_config_t mtr_br_channel = {
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel = LEDC_CHANNEL_3,
-        .timer_sel = LEDC_TIMER_0,
-        .intr_type = LEDC_INTR_DISABLE,
-        .gpio_num = MTR_BR_PWM,
-        .duty = 0,
-        .hpoint = 0,
-    };
-    ESP_LOGI(TAG, "Configuring Motor PWM Channels");
-    ledc_channel_config(&mtr_fl_channel);
-    ledc_channel_config(&mtr_fr_channel);
-    ledc_channel_config(&mtr_bl_channel);
-    ledc_channel_config(&mtr_br_channel);
 
     // * PWM Channel Configuration for Lifting Arm A
     ESP_LOGI(TAG, "Configuring Lifting Arm A PWM Channel");
@@ -386,7 +407,7 @@ volatile MotorGroup mecanum = {
     .FrontL = {
         .in1_pin = EXT_IO0,
         .in2_pin = EXT_IO1,
-        .pwm_channel = LEDC_CHANNEL_0,
+        .cmpr_handle = NULL,
         .speed = 0,
         .in1_level = 0,
         .in2_level = 0,
@@ -394,7 +415,7 @@ volatile MotorGroup mecanum = {
     .FrontR = {
         .in1_pin = EXT_IO2,
         .in2_pin = EXT_IO3,
-        .pwm_channel = LEDC_CHANNEL_1,
+        .cmpr_handle = NULL,
         .speed = 0,
         .in1_level = 0,
         .in2_level = 0,
@@ -402,7 +423,7 @@ volatile MotorGroup mecanum = {
     .BackL = {
         .in1_pin = EXT_IO4,
         .in2_pin = EXT_IO5,
-        .pwm_channel = LEDC_CHANNEL_2,
+        .cmpr_handle = NULL,
         .speed = 0,
         .in1_level = 0,
         .in2_level = 0,
@@ -410,7 +431,7 @@ volatile MotorGroup mecanum = {
     .BackR = {
         .in1_pin = EXT_IO6,
         .in2_pin = EXT_IO7,
-        .pwm_channel = LEDC_CHANNEL_3,
+        .cmpr_handle = NULL,
         .speed = 0,
         .in1_level = 0,
         .in2_level = 0,
@@ -445,22 +466,24 @@ esp_err_t mtr_spd_setting(MotorGroup* motor) {
     err = i2c9555_write_word(device_mtr, 0x02, port_data);
     if (err != ESP_OK) return err;
 
-    // Update PWM duties
+    // Update PWM duties (MCPWM)
+    // Scale 0-4096 to 0-500 (MCPWM Period)
     // FL
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, motor->FrontL.pwm_channel, motor->FrontL.speed);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, motor->FrontL.pwm_channel);
-
+    if (motor->FrontL.cmpr_handle) {
+        mcpwm_comparator_set_compare_value(motor->FrontL.cmpr_handle, (motor->FrontL.speed * 500) / 4096);
+    }
     // FR
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, motor->FrontR.pwm_channel, motor->FrontR.speed);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, motor->FrontR.pwm_channel);
-
+    if (motor->FrontR.cmpr_handle) {
+        mcpwm_comparator_set_compare_value(motor->FrontR.cmpr_handle, (motor->FrontR.speed * 500) / 4096);
+    }
     // BL
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, motor->BackL.pwm_channel, motor->BackL.speed);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, motor->BackL.pwm_channel);
-
+    if (motor->BackL.cmpr_handle) {
+        mcpwm_comparator_set_compare_value(motor->BackL.cmpr_handle, (motor->BackL.speed * 500) / 4096);
+    }
     // BR
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, motor->BackR.pwm_channel, motor->BackR.speed);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, motor->BackR.pwm_channel);
+    if (motor->BackR.cmpr_handle) {
+        mcpwm_comparator_set_compare_value(motor->BackR.cmpr_handle, (motor->BackR.speed * 500) / 4096);
+    }
 
     return ESP_OK;
 }
@@ -800,24 +823,21 @@ void manual_control_task(void *pvParameters)
             uint16_t lifting_a_raw = data.lifting_arm_a;
             uint32_t pulse_range_a = SERVO_A_MAX_US - SERVO_A_MIN_US;
             uint32_t pulse_us_a = SERVO_A_MIN_US + ((uint32_t)lifting_a_raw * pulse_range_a) / 255;
-            uint16_t lift_duty_a = servo_duty_from_pulse_us(pulse_us_a);
-            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, lift_duty_a);
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, servo_duty_from_pulse_us(pulse_us_a));
             ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
 
             // * Lifting Arm B
             uint16_t lifting_b_raw = data.lifting_arm_b;
             uint32_t pulse_range_b = SERVO_B_MAX_US - SERVO_B_MIN_US;
             uint32_t pulse_us_b = SERVO_B_MIN_US + ((uint32_t)lifting_b_raw * pulse_range_b) / 255;
-            uint16_t lift_duty_b = servo_duty_from_pulse_us(pulse_us_b);
-            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_6, lift_duty_b);
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_6, servo_duty_from_pulse_us(pulse_us_b));
             ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_6);
 
             // * Lifting Arm C
             uint16_t lifting_c_raw = data.lifting_arm_c;
             uint32_t pulse_range_c = SERVO_C_MAX_US - SERVO_C_MIN_US;
             uint32_t pulse_us_c = SERVO_C_MIN_US + ((uint32_t)lifting_c_raw * pulse_range_c) / 255;
-            uint16_t lift_duty_c = servo_duty_from_pulse_us(pulse_us_c);
-            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7, lift_duty_c);
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7, servo_duty_from_pulse_us(pulse_us_c));
             ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7);
             // ? Lifting Arm Control END
 
@@ -825,9 +845,7 @@ void manual_control_task(void *pvParameters)
             uint16_t claw_raw = data.mclaw_value;
             uint32_t pulse_range_claw = SERVO_CLAW_MAX_US - SERVO_CLAW_MIN_US;
             uint32_t pulse_us_claw = SERVO_CLAW_MIN_US + ((uint32_t)claw_raw * pulse_range_claw) / 255;
-            uint16_t claw_duty = servo_duty_from_pulse_us(pulse_us_claw);
-
-            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, claw_duty);
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, servo_duty_from_pulse_us(pulse_us_claw));
             ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
             // ? Mechanical Claw Control END
         }
