@@ -4,6 +4,7 @@ if(NOT DEFINED BUILD_TYPE)
     set(BUILD_TYPE "MAIN")
 endif()
 
+# Test different source files based on BUILD_TYPE
 if(BUILD_TYPE STREQUAL "MOTOR_TEST")
     file(GLOB_RECURSE srcs "motor_test.c" "includes/*.c")
     message(STATUS "Building MOTOR_TEST version")
