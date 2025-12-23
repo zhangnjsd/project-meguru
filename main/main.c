@@ -25,8 +25,8 @@
 #define IR_SDA_PIN GPIO_NUM_7 /*!< IR Sensor SDA Pin*/
 
 // ! Choose I2C address based on 9555 model: 
-// ; MODEL = 0 for PCA9555
-// ; MODEL = 1 for TCA9555
+// ; MODEL = 0 for TCA9555
+// ; MODEL = 1 for PCA9555
 #define TARGET_9555_MODEL(MODEL) ((MODEL) ? 0x20 : 0x40)
 
 #define I2C_9555_ADDRESS TARGET_9555_MODEL(1) /* I2C9555 Address */
@@ -215,6 +215,45 @@ static esp_err_t read_sensor_registers(i2c_master_dev_handle_t dev_handle, uint8
 // ! Motor Control based on IR State
 void mtr_ctrl_ir(void *args);
 
+// ? Define Motor Group
+volatile MotorGroup mecanum = {
+    .FrontL = {
+        .in1_pin = EXT_IO0,
+        .in2_pin = EXT_IO1,
+        .cmpr_handle = NULL,
+        .speed = 0,
+        .in1_level = 0,
+        .in2_level = 0,
+    },
+    .FrontR = {
+        .in1_pin = EXT_IO2,
+        .in2_pin = EXT_IO3,
+        .cmpr_handle = NULL,
+        .speed = 0,
+        .in1_level = 0,
+        .in2_level = 0,
+    },
+    .BackL = {
+        .in1_pin = EXT_IO4,
+        .in2_pin = EXT_IO5,
+        .cmpr_handle = NULL,
+        .speed = 0,
+        .in1_level = 0,
+        .in2_level = 0,
+    },
+    .BackR = {
+        .in1_pin = EXT_IO6,
+        .in2_pin = EXT_IO7,
+        .cmpr_handle = NULL,
+        .speed = 0,
+        .in1_level = 0,
+        .in2_level = 0,
+    },
+    .vx = 0.0f,
+    .vy = 0.0f,
+    .vr = 0.0f,
+};
+
 void app_main(void)
 {
 
@@ -265,21 +304,26 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(mcpwm_new_timer(&mtr_timer_config, &mtr_timer));
 
-    mcpwm_oper_handle_t mtr_operator = NULL;
+    mcpwm_oper_handle_t mtr_operator_front = NULL;
+    mcpwm_oper_handle_t mtr_operator_back = NULL;
     mcpwm_operator_config_t mtr_operator_config = {
         .group_id = 0, // operator must be in the same group to the timer
     };
-    ESP_ERROR_CHECK(mcpwm_new_operator(&mtr_operator_config, &mtr_operator));
+    ESP_ERROR_CHECK(mcpwm_new_operator(&mtr_operator_config, &mtr_operator_front));
+    ESP_ERROR_CHECK(mcpwm_new_operator(&mtr_operator_config, &mtr_operator_back));
 
-    ESP_ERROR_CHECK(mcpwm_operator_connect_timer(mtr_operator, mtr_timer));
+    ESP_ERROR_CHECK(mcpwm_operator_connect_timer(mtr_operator_front, mtr_timer));
+    ESP_ERROR_CHECK(mcpwm_operator_connect_timer(mtr_operator_back, mtr_timer));
 
     mcpwm_comparator_config_t mtr_comparator_config = {
         .flags.update_cmp_on_tez = true,
     };
-    ESP_ERROR_CHECK(mcpwm_new_comparator(mtr_operator, &mtr_comparator_config, &mtr_cmpr_fl));
-    ESP_ERROR_CHECK(mcpwm_new_comparator(mtr_operator, &mtr_comparator_config, &mtr_cmpr_fr));
-    ESP_ERROR_CHECK(mcpwm_new_comparator(mtr_operator, &mtr_comparator_config, &mtr_cmpr_bl));
-    ESP_ERROR_CHECK(mcpwm_new_comparator(mtr_operator, &mtr_comparator_config, &mtr_cmpr_br));
+    // Front Motors (Operator 1)
+    ESP_ERROR_CHECK(mcpwm_new_comparator(mtr_operator_front, &mtr_comparator_config, &mtr_cmpr_fl));
+    ESP_ERROR_CHECK(mcpwm_new_comparator(mtr_operator_front, &mtr_comparator_config, &mtr_cmpr_fr));
+    // Back Motors (Operator 2)
+    ESP_ERROR_CHECK(mcpwm_new_comparator(mtr_operator_back, &mtr_comparator_config, &mtr_cmpr_bl));
+    ESP_ERROR_CHECK(mcpwm_new_comparator(mtr_operator_back, &mtr_comparator_config, &mtr_cmpr_br));
 
     mcpwm_gen_handle_t mtr_gen_fl = NULL;
     mcpwm_gen_handle_t mtr_gen_fr = NULL;
@@ -289,13 +333,14 @@ void app_main(void)
     mcpwm_generator_config_t mtr_gen_config = {
         .gen_gpio_num = MTR_FL_PWM,
     };
-    ESP_ERROR_CHECK(mcpwm_new_generator(mtr_operator, &mtr_gen_config, &mtr_gen_fl));
+    ESP_ERROR_CHECK(mcpwm_new_generator(mtr_operator_front, &mtr_gen_config, &mtr_gen_fl));
     mtr_gen_config.gen_gpio_num = MTR_FR_PWM;
-    ESP_ERROR_CHECK(mcpwm_new_generator(mtr_operator, &mtr_gen_config, &mtr_gen_fr));
+    ESP_ERROR_CHECK(mcpwm_new_generator(mtr_operator_front, &mtr_gen_config, &mtr_gen_fr));
+    
     mtr_gen_config.gen_gpio_num = MTR_BL_PWM;
-    ESP_ERROR_CHECK(mcpwm_new_generator(mtr_operator, &mtr_gen_config, &mtr_gen_bl));
+    ESP_ERROR_CHECK(mcpwm_new_generator(mtr_operator_back, &mtr_gen_config, &mtr_gen_bl));
     mtr_gen_config.gen_gpio_num = MTR_BR_PWM;
-    ESP_ERROR_CHECK(mcpwm_new_generator(mtr_operator, &mtr_gen_config, &mtr_gen_br));
+    ESP_ERROR_CHECK(mcpwm_new_generator(mtr_operator_back, &mtr_gen_config, &mtr_gen_br));
 
     // ? Set generator actions: High on timer empty, Low on compare match
     ESP_ERROR_CHECK(mcpwm_generator_set_action_on_timer_event(mtr_gen_fl,
@@ -320,6 +365,12 @@ void app_main(void)
 
     ESP_ERROR_CHECK(mcpwm_timer_enable(mtr_timer));
     ESP_ERROR_CHECK(mcpwm_timer_start_stop(mtr_timer, MCPWM_TIMER_START_NO_STOP));
+
+    // ! Assign MCPWM handles to MotorGroup struct
+    mecanum.FrontL.cmpr_handle = mtr_cmpr_fl;
+    mecanum.FrontR.cmpr_handle = mtr_cmpr_fr;
+    mecanum.BackL.cmpr_handle = mtr_cmpr_bl;
+    mecanum.BackR.cmpr_handle = mtr_cmpr_br;
 
     // * Dedicated servo timer for GPIO4 (Lifting Arm)
     ledc_timer_config_t servo_timer = {
@@ -402,45 +453,6 @@ void app_main(void)
     // Increase stack to accommodate motor control logic and logging
     xTaskCreate(mtr_ctrl_ir, "Motor Control Task", 4096, NULL, 3, NULL);
 }
-
-// ? Define Motor Group
-volatile MotorGroup mecanum = {
-    .FrontL = {
-        .in1_pin = EXT_IO0,
-        .in2_pin = EXT_IO1,
-        .cmpr_handle = NULL,
-        .speed = 0,
-        .in1_level = 0,
-        .in2_level = 0,
-    },
-    .FrontR = {
-        .in1_pin = EXT_IO2,
-        .in2_pin = EXT_IO3,
-        .cmpr_handle = NULL,
-        .speed = 0,
-        .in1_level = 0,
-        .in2_level = 0,
-    },
-    .BackL = {
-        .in1_pin = EXT_IO4,
-        .in2_pin = EXT_IO5,
-        .cmpr_handle = NULL,
-        .speed = 0,
-        .in1_level = 0,
-        .in2_level = 0,
-    },
-    .BackR = {
-        .in1_pin = EXT_IO6,
-        .in2_pin = EXT_IO7,
-        .cmpr_handle = NULL,
-        .speed = 0,
-        .in1_level = 0,
-        .in2_level = 0,
-    },
-    .vx = 0.0f,
-    .vy = 0.0f,
-    .vr = 0.0f,
-};
 
 // ? Motor Controller
 esp_err_t mtr_spd_setting(MotorGroup* motor) {
