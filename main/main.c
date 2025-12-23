@@ -24,7 +24,12 @@
 #define IR_SCL_PIN GPIO_NUM_6 /*!< IR Sensor SCL Pin*/
 #define IR_SDA_PIN GPIO_NUM_7 /*!< IR Sensor SDA Pin*/
 
-#define I2C_9555_ADDRESS 0x20 /* I2C9555 Address */
+// ! Choose I2C address based on 9555 model: 
+// ; MODEL = 0 for PCA9555
+// ; MODEL = 1 for TCA9555
+#define TARGET_9555_MODEL(MODEL) ((MODEL) ? 0x20 : 0x40)
+
+#define I2C_9555_ADDRESS TARGET_9555_MODEL(1) /* I2C9555 Address */
 
 #define MTR_FL_PWM GPIO_NUM_10 /*!< Front-Left Motor*/
 #define MTR_FR_PWM GPIO_NUM_11 /*!< Front-Right Motor*/
@@ -76,10 +81,9 @@
 #define SERVO_CLAW_MIN_US 500 /*!< Minimum pulse width for Mechanical Claw */
 #define SERVO_CLAW_MAX_US 780 /*!< Maximum pulse width for Mechanical Claw */
 
-// int device_ir;
 int device_mtr;
 
-// MCPWM Handles for Motors
+// * MCPWM Handles for Motors
 mcpwm_cmpr_handle_t mtr_cmpr_fl = NULL;
 mcpwm_cmpr_handle_t mtr_cmpr_fr = NULL;
 mcpwm_cmpr_handle_t mtr_cmpr_bl = NULL;
@@ -87,20 +91,18 @@ mcpwm_cmpr_handle_t mtr_cmpr_br = NULL;
 
 int bar_detected_flag = 0;
 
-// IR _xTask
+// * IR _xTask
 TaskHandle_t ir_task_handle = NULL;
 
-/* ControlMode and current_mode are now defined in gatt_service.h */
 volatile ControlMode current_mode = CONTROL_MODE_AUTO;
 volatile bool manual_control_active = false;
 volatile bool waiting_for_start = true;
 
-// Queue for Tablet Data
 QueueHandle_t tablet_queue = NULL;
 
 // ? Line-following using weighted position algorithm
 // * Sensor weights for position calculation (from left to right)
-// * LLL=-4, LL=-3, LF=-2, FL=-1, FR=+1, RF=+2, RR=+3, RRR=+4
+// ; LLL=-4, LL=-3, LF=-2, FL=-1, FR=+1, RF=+2, RR=+3, RRR=+4
 typedef enum
 {
     LINE_NONE,         /*!< No line detected */
@@ -108,20 +110,19 @@ typedef enum
     LINE_FULL,         /*!< Full bar detected (start/stop) */
 } LineState;
 
-// Line following control parameters
 typedef struct {
-    float position;       // Weighted position: negative=left, positive=right
-    float last_position;  // Previous position for derivative
-    int sensor_count;     // Number of sensors detecting line
-    bool full_detected;   // Both outermost sensors detected
+    float position;     
+    float last_position;
+    int sensor_count;   
+    bool full_detected; 
 } LineFollowData;
 
 volatile LineFollowData line_data = {0};
 
 // PD Controller parameters
-#define LINE_KP 0.9f      // Proportional gain
-#define LINE_KD 0.1f     // Derivative gain
-#define LINE_BASE_SPEED 0.5f  // Base forward speed
+#define LINE_KP 0.9f            // * Proportional gain
+#define LINE_KD 0.1f            // * Derivative gain
+#define LINE_BASE_SPEED 0.5f    // * Base forward speed
 
 // ? IR Data
 typedef struct
@@ -167,17 +168,17 @@ typedef struct
     Motor FrontR;
     Motor BackL;
     Motor BackR;
-    float vx; // Velocity in X direction (cm/s)
-    float vy; // Velocity in Y direction (cm/s)
-    float vr; // Rotational Velocity (rad/s)
+    float vx; // ; Velocity in X direction (cm/s)
+    float vy; // ; Velocity in Y direction (cm/s)
+    float vr; // ; Rotational Velocity (rad/s)
 } MotorGroup;
 
 volatile IRData current_ir_data;
 volatile LineState current_line_state = LINE_NONE;
 
 // Separate I2C buses for IR sensor and TCA9555
-static i2c_master_bus_handle_t tca_i2c_bus = NULL;    // I2C bus for TCA9555 (GPIO8/GPIO9)
-static i2c_master_bus_handle_t ir_i2c_bus = NULL;     // I2C bus for IR sensor (GPIO6/GPIO7)
+static i2c_master_bus_handle_t tca_i2c_bus = NULL;    // ! I2C bus for TCA9555 (GPIO8/GPIO9)
+static i2c_master_bus_handle_t ir_i2c_bus = NULL;     // ! I2C bus for IR sensor (GPIO6/GPIO7)
 static i2c_master_dev_handle_t ir_dev_handle = NULL;
 
 static uint16_t servo_duty_from_pulse_us(uint32_t pulse_us)
@@ -228,7 +229,7 @@ void app_main(void)
         .RRR = false,
     };
 
-    // Initialize separate I2C buses for IR sensor and TCA9555
+    // ! Initialize separate I2C buses for IR sensor and TCA9555
     ESP_ERROR_CHECK(ir_i2c_bus_init(&ir_i2c_bus, &ir_dev_handle));  // IR sensor on GPIO6/GPIO7
     ESP_ERROR_CHECK(tca_i2c_bus_init(&tca_i2c_bus));                // TCA9555 on GPIO8/GPIO9
     ESP_ERROR_CHECK(i2c9555_attach_bus(tca_i2c_bus));
@@ -555,7 +556,7 @@ void ir_read_callback(uint8_t state_buf[0])
     }
 
     // * Calculate weighted position using PD algorithm
-    // * Sensor weights: LLL=-4, LL=-3, LF=-2, FL=-1, FR=+1, RF=+2, RR=+3, RRR=+4
+    // ; Sensor weights: LLL=-4, LL=-3, LF=-2, FL=-1, FR=+1, RF=+2, RR=+3, RRR=+4
     float weighted_sum = 0.0f;
     int sensor_count = 0;
     
@@ -603,8 +604,8 @@ static esp_err_t ir_i2c_bus_init(i2c_master_bus_handle_t *bus_handle, i2c_master
     {
         i2c_master_bus_config_t bus_config = {
             .i2c_port = I2C_NUM_0,
-            .sda_io_num = IR_SDA_PIN,   // GPIO7
-            .scl_io_num = IR_SCL_PIN,   // GPIO6
+            .sda_io_num = IR_SDA_PIN,
+            .scl_io_num = IR_SCL_PIN,
             .clk_source = I2C_CLK_SRC_DEFAULT,
             .glitch_ignore_cnt = 7,
             .flags.enable_internal_pullup = true,
