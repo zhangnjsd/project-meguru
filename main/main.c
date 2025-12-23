@@ -230,8 +230,8 @@ void app_main(void)
     };
 
     // ! Initialize separate I2C buses for IR sensor and TCA9555
-    ESP_ERROR_CHECK(ir_i2c_bus_init(&ir_i2c_bus, &ir_dev_handle));  // IR sensor on GPIO6/GPIO7
-    ESP_ERROR_CHECK(tca_i2c_bus_init(&tca_i2c_bus));                // TCA9555 on GPIO8/GPIO9
+    ESP_ERROR_CHECK(ir_i2c_bus_init(&ir_i2c_bus, &ir_dev_handle));
+    ESP_ERROR_CHECK(tca_i2c_bus_init(&tca_i2c_bus));
     ESP_ERROR_CHECK(i2c9555_attach_bus(tca_i2c_bus));
 
     // * Initialize Tablet Data Queue
@@ -239,16 +239,16 @@ void app_main(void)
 
     // * Initialize Motor Controller via 9555
     device_mtr = i2c9555_add_device(TCA_SDA_PIN, TCA_SCL_PIN, I2C_9555_ADDRESS, GPIO_NUM_NC, NULL);
-    /*  Motor Controller Configuration
-        Pin     Functions       State
-        00      MTR_FL_IN1      Output
-        01      MTR_FL_IN2      Output
-        02      MTR_FR_IN1      Output
-        03      MTR_FR_IN2      Output
-        04      MTR_BL_IN1      Output
-        05      MTR_BL_IN2      Output
-        06      MTR_BR_IN1      Output
-        07      MTR_BR_IN2      Output
+    /** Motor Controller Configuration
+    *!    Pin     Functions       State
+    *;    00      MTR_FL_IN1      Output
+    *;    01      MTR_FL_IN2      Output
+    *;    02      MTR_FR_IN1      Output
+    *;    03      MTR_FR_IN2      Output
+    *;    04      MTR_BL_IN1      Output
+    *;    05      MTR_BL_IN2      Output
+    *;    06      MTR_BR_IN1      Output
+    *;    07      MTR_BR_IN2      Output
     */
     ESP_LOGI(TAG, "Configuring Motor Controller IO Expander");
     i2c9555_ioconfig(device_mtr, 0x0000);
@@ -297,7 +297,7 @@ void app_main(void)
     mtr_gen_config.gen_gpio_num = MTR_BR_PWM;
     ESP_ERROR_CHECK(mcpwm_new_generator(mtr_operator, &mtr_gen_config, &mtr_gen_br));
 
-    // Set generator actions: High on timer empty, Low on compare match
+    // ? Set generator actions: High on timer empty, Low on compare match
     ESP_ERROR_CHECK(mcpwm_generator_set_action_on_timer_event(mtr_gen_fl,
                     MCPWM_GEN_TIMER_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, MCPWM_TIMER_EVENT_EMPTY, MCPWM_GEN_ACTION_HIGH)));
     ESP_ERROR_CHECK(mcpwm_generator_set_action_on_compare_event(mtr_gen_fl,
