@@ -20,6 +20,7 @@ typedef struct
     uint16_t lifting_arm_a;     // Lifting Arm A (0x00~0xFF)
     uint16_t lifting_arm_b;     // Lifting Arm B (0x00~0xFF)
     uint16_t lifting_arm_c;     // Lifting Arm C (0x00~0xFF)
+    uint16_t lifting_arm_end;   // Lifting Arm END Effector (0x00~0xFF)
     uint16_t mclaw_value;       // Mechanical Claw (0x00~0xFF)
     uint8_t command;            // Command (e.g. 0x91 for start)
 } TabletData;

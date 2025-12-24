@@ -13,6 +13,7 @@ volatile TabletData tablet_data = {
     0,      // * Lifting Arm A Position (0x00~0xFF)
     0,      // * Lifting Arm B Position (0x00~0xFF)
     0,      // * Lifting Arm C Position (0x00~0xFF)
+    0,      // * Lifting Arm END Effector Position (0x00~0xFF)
     0,      // * Mechanical Claw Position (0x00~0xFF)
     0       // * Command
 };
@@ -54,6 +55,11 @@ static int lifting_arm_c_cb(
     uint16_t attr_handle,
     struct ble_gatt_access_ctxt *ctxt,
     void *arg);
+static int lifting_arm_end_cb(
+    uint16_t conn_handle,
+    uint16_t attr_handle,
+    struct ble_gatt_access_ctxt *ctxt,
+    void *arg);
 static int mclaw_value_cb(
     uint16_t conn_handle,
     uint16_t attr_handle,
@@ -84,6 +90,9 @@ static const ble_uuid128_t lifting_arm_b_characteristic_uuid = BLE_UUID128_INIT(
                                                                                      0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
 static const ble_uuid128_t lifting_arm_c_characteristic_uuid = BLE_UUID128_INIT(0xA9, 0xA9, 0xD7, 0xE3, 0x11, 0x45, 0x19, 0x19,
                                                                                      0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
+// todo: define lifting arm end effector characteristic UUID
+static const ble_uuid128_t lifting_arm_end_characteristic_uuid = BLE_UUID128_INIT(0xA9, 0xA9, 0xD7, 0xE3, 0x11, 0x45, 0x19, 0x19,
+                                                                                     0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
 static const ble_uuid128_t mclaw_value_characteristic_uuid = BLE_UUID128_INIT(0xE2, 0xD3, 0xD4, 0xC4, 0x11, 0x45, 0x19, 0x19,
                                                                                      0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
 static const ble_uuid128_t command_characteristic_uuid = BLE_UUID128_INIT(0x91, 0x00, 0x00, 0x00, 0x11, 0x45, 0x19, 0x19,
@@ -97,6 +106,7 @@ static uint16_t controller_usable_handler;
 static uint16_t lifting_arm_a_handler;
 static uint16_t lifting_arm_b_handler;
 static uint16_t lifting_arm_c_handler;
+static uint16_t lifting_arm_end_handler;
 static uint16_t mclaw_value_handler;
 static uint16_t command_handler;
 
@@ -141,6 +151,12 @@ static struct ble_gatt_chr_def tablet_chr[] = {
     {
         .uuid = &lifting_arm_c_characteristic_uuid.u,
         .access_cb = lifting_arm_c_cb,
+        .flags = BLE_GATT_CHR_F_WRITE,
+        .val_handle = &lifting_arm_c_handler,
+    },
+    {
+        .uuid = &lifting_arm_end_characteristic_uuid.u,
+        .access_cb = lifting_arm_end_cb,
         .flags = BLE_GATT_CHR_F_WRITE,
         .val_handle = &lifting_arm_c_handler,
     },
@@ -203,7 +219,7 @@ static int x_cb(
                 
                 tablet_data.x_value = x_val;
                 
-                ESP_LOGI(TAG, "Received X value: %u (0x%04X)", x_val, x_val);
+                ////ESP_LOGI(TAG, "Received X value: %u (0x%04X)", x_val, x_val);
                 
                 if (data_callback != NULL)
                 {
@@ -257,7 +273,7 @@ static int y_cb(
                 
                 tablet_data.y_value = y_val;
                 
-                ESP_LOGI(TAG, "Received Y value: %u (0x%04X)", y_val, y_val);
+                ////ESP_LOGI(TAG, "Received Y value: %u (0x%04X)", y_val, y_val);
                 
                 if (data_callback != NULL)
                 {
@@ -311,7 +327,7 @@ static int r_cb(
                 
                 tablet_data.r_value = r_val;
                 
-                ESP_LOGI(TAG, "Received R value: %u (0x%04X)", r_val, r_val);
+                ////ESP_LOGI(TAG, "Received R value: %u (0x%04X)", r_val, r_val);
                 
                 if (data_callback != NULL)
                 {
@@ -355,7 +371,7 @@ static int controller_usable_cb(
             /* Return 0x01 if manual mode is active (auto mode exited) or waiting for start, otherwise 0x00 */
             uint8_t data = (current_mode == CONTROL_MODE_MANUAL || waiting_for_start) ? 0x01 : 0x00;
             
-            ESP_LOGI(TAG, "Controller Usable Status: %d (mode: %d, waiting: %d)", data, current_mode, waiting_for_start);
+            ////ESP_LOGI(TAG, "Controller Usable Status: %d (mode: %d, waiting: %d)", data, current_mode, waiting_for_start);
 
             /* Append data to the output mbuf */
             int rc = os_mbuf_append(om, &data, sizeof(data));
@@ -401,7 +417,7 @@ static int lifting_arm_a_cb(
 
                 tablet_data.lifting_arm_a = lifting_val;
 
-                ESP_LOGI(TAG, "Received Lifting Arm A value: %u", lifting_val);
+                ////ESP_LOGI(TAG, "Received Lifting Arm A value: %u", lifting_val);
 
                 if (data_callback != NULL)
                 {
@@ -450,7 +466,7 @@ static int lifting_arm_b_cb(
 
                 tablet_data.lifting_arm_b = lifting_val;
 
-                ESP_LOGI(TAG, "Received Lifting Arm B value: %u", lifting_val);
+                ////ESP_LOGI(TAG, "Received Lifting Arm B value: %u", lifting_val);
 
                 if (data_callback != NULL)
                 {
@@ -499,7 +515,7 @@ static int lifting_arm_c_cb(
 
                 tablet_data.lifting_arm_c = lifting_val;
 
-                ESP_LOGI(TAG, "Received Lifting Arm C value: %u", lifting_val);
+                ////ESP_LOGI(TAG, "Received Lifting Arm C value: %u", lifting_val);
 
                 if (data_callback != NULL)
                 {
@@ -525,6 +541,56 @@ static int lifting_arm_c_cb(
     }
     return 0;
 }
+
+// ! Lifting Arm END Effector Callback
+static int lifting_arm_c_cb(
+    uint16_t conn_handle,
+    uint16_t attr_handle,
+    struct ble_gatt_access_ctxt *ctxt,
+    void *arg)
+{
+    switch (ctxt->op)
+    {
+    case BLE_GATT_ACCESS_OP_WRITE_CHR:
+        /* Verify attribute handle */
+        if (attr_handle == lifting_arm_end_handler)
+        {
+            uint16_t data_len = OS_MBUF_PKTLEN(ctxt->om);
+
+            if (data_len >= 2)
+            {
+                // Little-endian: low byte first, high byte second
+                uint16_t lifting_val = ctxt->om->om_data[0] | (ctxt->om->om_data[1] << 8);
+
+                tablet_data.lifting_arm_end = lifting_val;
+
+                ////ESP_LOGI(TAG, "Received Lifting Arm Effector value: %u", lifting_val);
+
+                if (data_callback != NULL)
+                {
+                    data_callback(tablet_data);
+                }
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Lifting Arm END Effector length too short: %d", data_len);
+            }
+        }
+        else
+        {
+            ESP_LOGE(TAG,
+                     "Write request for unknown attribute handle: %d",
+                     attr_handle);
+        }
+        break;
+
+    default:
+        ESP_LOGE(TAG, "Unknown GATT operation: %d", ctxt->op);
+        break;
+    }
+    return 0;
+}
+
 // ! Mechanical Claw Value Callback
 static int mclaw_value_cb(
     uint16_t conn_handle,
@@ -547,7 +613,7 @@ static int mclaw_value_cb(
 
                 tablet_data.mclaw_value = mclaw_val;
 
-                ESP_LOGI(TAG, "Received Mechanical Claw value: %u", mclaw_val);
+                ////ESP_LOGI(TAG, "Received Mechanical Claw value: %u", mclaw_val);
 
                 if (data_callback != NULL)
                 {
@@ -595,7 +661,7 @@ static int command_cb(
 
                 tablet_data.command = cmd_val;
 
-                ESP_LOGI(TAG, "Received Command value: 0x%02X", cmd_val);
+                ////ESP_LOGI(TAG, "Received Command value: 0x%02X", cmd_val);
 
                 if (data_callback != NULL)
                 {

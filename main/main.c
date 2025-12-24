@@ -16,8 +16,8 @@
 #define TAG "MAIN"
 #endif
 
-#define TCA_SDA_PIN GPIO_NUM_8 /*!< SDA BUS*/
-#define TCA_SCL_PIN GPIO_NUM_9 /*!< SDA BUS*/
+#define TCA_SDA_PIN GPIO_NUM_8 /*!< Ext SDA Pin*/
+#define TCA_SCL_PIN GPIO_NUM_9 /*!< Ext SDA Pin*/
 #define I2C_FREQ_HZ 100000 /*!< I2C Frequency 100kHz*/
 #define I2C_TIMEOUT_MS 1000 /*!< I2C Timeout in milliseconds*/
 
@@ -35,9 +35,6 @@
 #define MTR_FR_PWM GPIO_NUM_11 /*!< Front-Right Motor*/
 #define MTR_BL_PWM GPIO_NUM_12 /*!< Back-Left Motor*/
 #define MTR_BR_PWM GPIO_NUM_13 /*!< Back-Right Motor*/
-
-#define ARM_LIFT_PWM GPIO_NUM_4 /*!< Lifting Arm Motor*/
-#define CLAW_SW_PWM GPIO_NUM_5  /*!< Mechanical Claw Motor*/
 
 #define SERVO_FREQ_HZ 50                          /*!< Servo Frequency 50Hz */
 #define SERVO_PERIOD_US (1000000 / SERVO_FREQ_HZ) /*!< Servo Period in microseconds */
@@ -64,6 +61,8 @@
 #define SERVO_LIFT_B_PIN GPIO_NUM_36 /*!< Lifting Arm B Servo Pin */
 #define SERVO_LIFT_C_PIN GPIO_NUM_37 /*!< Lifting Arm C Servo Pin */
 
+#define SERVO_LIFT_END_PIN GPIO_NUM_5 /*!< Lifting Arm End Effector Servo Pin */
+
 #define SERVO_CLAW_PIN GPIO_NUM_4 /*!< Mechanical Claw Servo Pin */
 
 // ! Servo Pulse Width Ranges (0x00-0xFF maps to these ranges)
@@ -78,8 +77,12 @@
 #define SERVO_C_MIN_US 500 /*!< Minimum pulse width for Lifting Arm C */
 #define SERVO_C_MAX_US 2500 /*!< Maximum pulse width for Lifting Arm C */
 
+// todo: Calibrate these values for your specific servos
+#define SERVO_END_MIN_US 500 /*!< Minimum pulse width for Lifting Arm C */
+#define SERVO_END_MAX_US 2500 /*!< Maximum pulse width for Lifting Arm C */
+
 #define SERVO_CLAW_MIN_US 500 /*!< Minimum pulse width for Mechanical Claw */
-#define SERVO_CLAW_MAX_US 780 /*!< Maximum pulse width for Mechanical Claw */
+#define SERVO_CLAW_MAX_US 950 /*!< Maximum pulse width for Mechanical Claw */
 
 int device_mtr;
 
@@ -307,7 +310,7 @@ void app_main(void)
     mcpwm_oper_handle_t mtr_operator_front = NULL;
     mcpwm_oper_handle_t mtr_operator_back = NULL;
     mcpwm_operator_config_t mtr_operator_config = {
-        .group_id = 0, // operator must be in the same group to the timer
+        .group_id = 0,
     };
     ESP_ERROR_CHECK(mcpwm_new_operator(&mtr_operator_config, &mtr_operator_front));
     ESP_ERROR_CHECK(mcpwm_new_operator(&mtr_operator_config, &mtr_operator_back));
@@ -372,7 +375,7 @@ void app_main(void)
     mecanum.BackL.cmpr_handle = mtr_cmpr_bl;
     mecanum.BackR.cmpr_handle = mtr_cmpr_br;
 
-    // * Dedicated servo timer for GPIO4 (Lifting Arm)
+    // * Dedicated servo timer for Arm Servos & Mechanical Claw
     ledc_timer_config_t servo_timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .timer_num = LEDC_TIMER_1,
@@ -386,7 +389,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Configuring Lifting Arm A PWM Channel");
     ledc_channel_config_t arm_lift_a_channel = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel = LEDC_CHANNEL_4,
+        .channel = LEDC_CHANNEL_2,
         .timer_sel = LEDC_TIMER_1,
         .intr_type = LEDC_INTR_DISABLE,
         .gpio_num = SERVO_LIFT_A_PIN,
@@ -395,24 +398,11 @@ void app_main(void)
     };
     ledc_channel_config(&arm_lift_a_channel);
 
-    // * PWM Channel Configuration for Mechanical Claw
-    ESP_LOGI(TAG, "Configuring Mechanical Claw PWM Channel");
-    ledc_channel_config_t claw_sw_channel = {
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel = LEDC_CHANNEL_5,
-        .timer_sel = LEDC_TIMER_1,
-        .intr_type = LEDC_INTR_DISABLE,
-        .gpio_num = SERVO_CLAW_PIN,
-        .duty = 0,
-        .hpoint = 0,
-    };
-    ledc_channel_config(&claw_sw_channel);
-
     // * PWM Channel Configuration for Lifting Arm B
     ESP_LOGI(TAG, "Configuring Lifting Arm B PWM Channel");
     ledc_channel_config_t arm_lift_b_channel = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel = LEDC_CHANNEL_6,
+        .channel = LEDC_CHANNEL_3,
         .timer_sel = LEDC_TIMER_1,
         .intr_type = LEDC_INTR_DISABLE,
         .gpio_num = SERVO_LIFT_B_PIN,
@@ -425,7 +415,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Configuring Lifting Arm C PWM Channel");
     ledc_channel_config_t arm_lift_c_channel = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel = LEDC_CHANNEL_7,
+        .channel = LEDC_CHANNEL_4,
         .timer_sel = LEDC_TIMER_1,
         .intr_type = LEDC_INTR_DISABLE,
         .gpio_num = SERVO_LIFT_C_PIN,
@@ -433,6 +423,32 @@ void app_main(void)
         .hpoint = 0,
     };
     ledc_channel_config(&arm_lift_c_channel);
+
+    // * PWM Channel Configuration for Lifting Arm END Effector
+    ESP_LOGI(TAG, "Configuring Lifting Arm C PWM Channel");
+    ledc_channel_config_t arm_lift_end_channel = {
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel = LEDC_CHANNEL_5,
+        .timer_sel = LEDC_TIMER_1,
+        .intr_type = LEDC_INTR_DISABLE,
+        .gpio_num = SERVO_LIFT_END_PIN,
+        .duty = 0,
+        .hpoint = 0,
+    };
+    ledc_channel_config(&arm_lift_end_channel);
+
+    // * PWM Channel Configuration for Mechanical Claw
+    ESP_LOGI(TAG, "Configuring Mechanical Claw PWM Channel");
+    ledc_channel_config_t claw_sw_channel = {
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel = LEDC_CHANNEL_6,
+        .timer_sel = LEDC_TIMER_1,
+        .intr_type = LEDC_INTR_DISABLE,
+        .gpio_num = SERVO_CLAW_PIN,
+        .duty = 0,
+        .hpoint = 0,
+    };
+    ledc_channel_config(&claw_sw_channel);
 
     // ? BLE Handler START
     ESP_LOGI(TAG, "Initializing NimBLE Stack");
@@ -473,14 +489,11 @@ esp_err_t mtr_spd_setting(MotorGroup* motor) {
     if (motor->BackR.in1_level) port_data |= motor->BackR.in1_pin;
     if (motor->BackR.in2_level) port_data |= motor->BackR.in2_pin;
 
-    // Write all direction pins at once (Port 0 is low byte, Port 1 is high byte)
-    // Register 0x02 is Output Port 0. i2c9555_write_word writes 16 bits starting from reg.
-    // This reduces I2C transactions from 8 (read-modify-write) to 1 (write only).
     err = i2c9555_write_word(device_mtr, 0x02, port_data);
     if (err != ESP_OK) return err;
 
-    // Update PWM duties (MCPWM)
-    // Scale 0-4096 to 0-500 (MCPWM Period)
+    // ! Update PWM duties (MCPWM)
+    // ; Scale 0-4096 to 0-500 (MCPWM Period)
     // FL
     if (motor->FrontL.cmpr_handle) {
         mcpwm_comparator_set_compare_value(motor->FrontL.cmpr_handle, (motor->FrontL.speed * 500) / 4096);
@@ -527,7 +540,8 @@ void ir_read_task()
         } else {
             ESP_LOGE(TAG, "Failed to read state register, error code: 0x%X", err);
         }
-        vTaskDelay(pdMS_TO_TICKS(2));  // 2ms interval = 500Hz sampling rate
+        vTaskDelay(pdMS_TO_TICKS(2));  
+        // 2ms interval = 500Hz sampling rate
     }
 }
 
@@ -587,7 +601,7 @@ void ir_read_callback(uint8_t state_buf[0])
     
     // Calculate normalized position (-1.0 to +1.0)
     if (sensor_count > 0) {
-        line_data.position = weighted_sum / (sensor_count * 4.0f);  // Normalize by max weight
+        line_data.position = weighted_sum / (sensor_count * 4.0f);
     }
     // If no sensors, keep last known position (helps with gaps)
     
@@ -649,7 +663,7 @@ static esp_err_t ir_i2c_bus_init(i2c_master_bus_handle_t *bus_handle, i2c_master
     return ESP_OK;
 }
 
-// ? TCA9555 I2C Bus Init (GPIO8/GPIO9)
+// ? TCA9555/PCA9555 I2C Bus Init (GPIO8/GPIO9)
 static esp_err_t tca_i2c_bus_init(i2c_master_bus_handle_t *bus_handle)
 {
     if (bus_handle == NULL)
@@ -661,8 +675,8 @@ static esp_err_t tca_i2c_bus_init(i2c_master_bus_handle_t *bus_handle)
     {
         i2c_master_bus_config_t bus_config = {
             .i2c_port = I2C_NUM_1,
-            .sda_io_num = TCA_SDA_PIN,   // GPIO8
-            .scl_io_num = TCA_SCL_PIN,   // GPIO9
+            .sda_io_num = TCA_SDA_PIN,
+            .scl_io_num = TCA_SCL_PIN,
             .clk_source = I2C_CLK_SRC_DEFAULT,
             .glitch_ignore_cnt = 7,
             .flags.enable_internal_pullup = true,
@@ -697,10 +711,10 @@ static esp_err_t read_sensor_registers(i2c_master_dev_handle_t dev_handle, uint8
  * @param motor Pointer to MotorGroup structure (reads vx, vy, vr from struct)
  * @param mag Speed magnitude multiplier (0.0 ~ 1.0)
  * 
- * Before calling, set motor->vx, motor->vy, motor->vr:
- *   vx: Lateral velocity (-1.0 ~ 1.0, positive = right)
- *   vy: Longitudinal velocity (-1.0 ~ 1.0, positive = forward)
- *   vr: Angular velocity (-1.0 ~ 1.0, positive = clockwise)
+ * ; Before calling, set motor->vx, motor->vy, motor->vr:
+ * ;   vx: Lateral velocity (-1.0 ~ 1.0, positive = right)
+ * ;   vy: Longitudinal velocity (-1.0 ~ 1.0, positive = forward)
+ * ;   vr: Angular velocity (-1.0 ~ 1.0, positive = clockwise)
  * 
  * ! Mecanum wheel kinematics (X-type configuration):
  * ? FL = Vy + Vx + ω
@@ -710,18 +724,15 @@ static esp_err_t read_sensor_registers(i2c_master_dev_handle_t dev_handle, uint8
  */
 static void mecanum_move(MotorGroup* motor, float mag)
 {
-    // Read velocity values from MotorGroup structure
     float vx = motor->vx;
     float vy = motor->vy;
     float omega = motor->vr;
     
-    // Calculate each wheel speed (-1.0 ~ 1.0) - X-type configuration
     float fl = vy + vx + omega;
     float fr = vy - vx - omega;
     float bl = vy - vx + omega;
     float br = vy + vx - omega;
     
-    // Normalize to ensure max value does not exceed 1.0
     float max_val = fmaxf(fmaxf(fabsf(fl), fabsf(fr)), fmaxf(fabsf(bl), fabsf(br)));
     if (max_val > 1.0f)
     {
@@ -731,34 +742,32 @@ static void mecanum_move(MotorGroup* motor, float mag)
         br /= max_val;
     }
     
-    // Apply speed magnitude
     fl *= mag;
     fr *= mag;
     bl *= mag;
     br *= mag;
     
-    // Helper function to map speed with minimum start threshold
-    // Input: 0~1 float -> Output: 0 or MTR_MIN_START~MTR_FULL_SPD
+    // * A Macro to map speed values considering deadzone and minimum start speed
     #define MAP_MOTOR_SPEED(speed_val) \
         (fabsf(speed_val) < MTR_INPUT_DEADZONE ? 0 : \
          (uint16_t)(MTR_MIN_START + fabsf(speed_val) * (MTR_FULL_SPD - MTR_MIN_START)))
     
-    // Set front-left wheel
+    // ? Set front-left wheel
     motor->FrontL.in1_level = (fl >= 0) ? 1 : 0;
     motor->FrontL.in2_level = (fl >= 0) ? 0 : 1;
     motor->FrontL.speed = MAP_MOTOR_SPEED(fl);
     
-    // Set front-right wheel
+    // ? Set front-right wheel
     motor->FrontR.in1_level = (fr >= 0) ? 1 : 0;
     motor->FrontR.in2_level = (fr >= 0) ? 0 : 1;
     motor->FrontR.speed = MAP_MOTOR_SPEED(fr);
     
-    // Set back-left wheel
+    // ? Set back-left wheel
     motor->BackL.in1_level = (bl >= 0) ? 1 : 0;
     motor->BackL.in2_level = (bl >= 0) ? 0 : 1;
     motor->BackL.speed = MAP_MOTOR_SPEED(bl);
     
-    // Set back-right wheel
+    // ? Set back-right wheel
     motor->BackR.in1_level = (br >= 0) ? 1 : 0;
     motor->BackR.in2_level = (br >= 0) ? 0 : 1;
     motor->BackR.speed = MAP_MOTOR_SPEED(br);
@@ -770,7 +779,6 @@ static void mecanum_move(MotorGroup* motor, float mag)
 
 static void stopMotors()
 {
-    // All velocities zero = stop
     mecanum.vx = 0.0f;
     mecanum.vy = 0.0f;
     mecanum.vr = 0.0f;
@@ -795,10 +803,10 @@ void manual_control_task(void *pvParameters)
         if (xQueueReceive(tablet_queue, &data, pdMS_TO_TICKS(3000)) == pdTRUE)
         {
             // ? Manual Control Mode Movement START
-            // * Map joystick to mecanum wheel translation
-            // * X: 0x00(Left) <- 0x7F(Center) -> 0xFF(Right) => vx (lateral)
-            // * Y: 0x00(Forward) <- 0x7F(Center) -> 0xFF(Backward) => vy (longitudinal)
-            // * R: 0x00(Left) <- 0x7F(Center) -> 0xFF(Right) => vr (rotation)
+            // ; Map joystick to mecanum wheel translation
+            // ; X: 0x00(Left) <- 0x7F(Center) -> 0xFF(Right) => vx (lateral)
+            // ; Y: 0x00(Forward) <- 0x7F(Center) -> 0xFF(Backward) => vy (longitudinal)
+            // ; R: 0x00(Left) <- 0x7F(Center) -> 0xFF(Right) => vr (rotation)
             
             float raw_vx = ((float)data.x_value - 127.0f) / 127.0f; 
             float raw_vy = (127.0f - (float)data.y_value) / 127.0f;
@@ -836,30 +844,37 @@ void manual_control_task(void *pvParameters)
             uint16_t lifting_a_raw = data.lifting_arm_a;
             uint32_t pulse_range_a = SERVO_A_MAX_US - SERVO_A_MIN_US;
             uint32_t pulse_us_a = SERVO_A_MIN_US + ((uint32_t)lifting_a_raw * pulse_range_a) / 255;
-            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, servo_duty_from_pulse_us(pulse_us_a));
-            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, servo_duty_from_pulse_us(pulse_us_a));
+            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2);
 
             // * Lifting Arm B
             uint16_t lifting_b_raw = data.lifting_arm_b;
             uint32_t pulse_range_b = SERVO_B_MAX_US - SERVO_B_MIN_US;
             uint32_t pulse_us_b = SERVO_B_MIN_US + ((uint32_t)lifting_b_raw * pulse_range_b) / 255;
-            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_6, servo_duty_from_pulse_us(pulse_us_b));
-            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_6);
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3, servo_duty_from_pulse_us(pulse_us_b));
+            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_3);
 
             // * Lifting Arm C
             uint16_t lifting_c_raw = data.lifting_arm_c;
             uint32_t pulse_range_c = SERVO_C_MAX_US - SERVO_C_MIN_US;
             uint32_t pulse_us_c = SERVO_C_MIN_US + ((uint32_t)lifting_c_raw * pulse_range_c) / 255;
-            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7, servo_duty_from_pulse_us(pulse_us_c));
-            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7);
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4, servo_duty_from_pulse_us(pulse_us_c));
+            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_4);
+
+            // * Lifting Arm END
+            uint16_t lifting_end_raw = data.lifting_arm_end;
+            uint32_t pulse_range_end = SERVO_END_MAX_US - SERVO_END_MIN_US;
+            uint32_t pulse_us_end = SERVO_C_MIN_US + ((uint32_t)lifting_end_raw * pulse_range_end) / 255;
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, servo_duty_from_pulse_us(pulse_us_end));
+            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
             // ? Lifting Arm Control END
 
             // ? Mechanical Claw Control START
             uint16_t claw_raw = data.mclaw_value;
             uint32_t pulse_range_claw = SERVO_CLAW_MAX_US - SERVO_CLAW_MIN_US;
             uint32_t pulse_us_claw = SERVO_CLAW_MIN_US + ((uint32_t)claw_raw * pulse_range_claw) / 255;
-            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, servo_duty_from_pulse_us(pulse_us_claw));
-            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_6, servo_duty_from_pulse_us(pulse_us_claw));
+            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_6);
             // ? Mechanical Claw Control END
         }
         else
@@ -941,7 +956,7 @@ void mtr_ctrl_ir(void *args)
             break;
             
         case LINE_FOLLOWING:
-            line_lost_counter = 0;  // Reset timeout
+            line_lost_counter = 0;
             
             // PD Controller calculation
             float error = line_data.position;
