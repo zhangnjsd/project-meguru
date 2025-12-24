@@ -543,7 +543,7 @@ static int lifting_arm_c_cb(
 }
 
 // ! Lifting Arm END Effector Callback
-static int lifting_arm_c_cb(
+static int lifting_arm_end_cb(
     uint16_t conn_handle,
     uint16_t attr_handle,
     struct ble_gatt_access_ctxt *ctxt,
