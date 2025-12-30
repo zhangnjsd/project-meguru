@@ -90,8 +90,7 @@ static const ble_uuid128_t lifting_arm_b_characteristic_uuid = BLE_UUID128_INIT(
                                                                                      0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
 static const ble_uuid128_t lifting_arm_c_characteristic_uuid = BLE_UUID128_INIT(0xA9, 0xA9, 0xD7, 0xE3, 0x11, 0x45, 0x19, 0x19,
                                                                                      0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
-// todo: define lifting arm end effector characteristic UUID
-static const ble_uuid128_t lifting_arm_end_characteristic_uuid = BLE_UUID128_INIT(0xA9, 0xA9, 0xD7, 0xE3, 0x11, 0x45, 0x19, 0x19,
+static const ble_uuid128_t lifting_arm_end_characteristic_uuid = BLE_UUID128_INIT(0xAA, 0xA9, 0xD7, 0xE3, 0x11, 0x45, 0x19, 0x19,
                                                                                      0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
 static const ble_uuid128_t mclaw_value_characteristic_uuid = BLE_UUID128_INIT(0xE2, 0xD3, 0xD4, 0xC4, 0x11, 0x45, 0x19, 0x19,
                                                                                      0x19, 0x19, 0x11, 0x45, 0x14, 0x19, 0x81, 0x00);
@@ -158,7 +157,7 @@ static struct ble_gatt_chr_def tablet_chr[] = {
         .uuid = &lifting_arm_end_characteristic_uuid.u,
         .access_cb = lifting_arm_end_cb,
         .flags = BLE_GATT_CHR_F_WRITE,
-        .val_handle = &lifting_arm_c_handler,
+        .val_handle = &lifting_arm_end_handler,
     },
     {
         .uuid = &mclaw_value_characteristic_uuid.u,

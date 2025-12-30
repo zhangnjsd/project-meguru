@@ -59,9 +59,9 @@
 
 #define SERVO_LIFT_A_PIN GPIO_NUM_35 /*!< Lifting Arm A Servo Pin */
 #define SERVO_LIFT_B_PIN GPIO_NUM_36 /*!< Lifting Arm B Servo Pin */
-#define SERVO_LIFT_C_PIN GPIO_NUM_37 /*!< Lifting Arm C Servo Pin */
+#define SERVO_LIFT_C_PIN GPIO_NUM_1 /*!< Lifting Arm C Servo Pin */
 
-#define SERVO_LIFT_END_PIN GPIO_NUM_5 /*!< Lifting Arm End Effector Servo Pin */
+#define SERVO_LIFT_END_PIN GPIO_NUM_2 /*!< Lifting Arm End Effector Servo Pin */
 
 #define SERVO_CLAW_PIN GPIO_NUM_4 /*!< Mechanical Claw Servo Pin */
 
@@ -864,7 +864,7 @@ void manual_control_task(void *pvParameters)
             // * Lifting Arm END
             uint16_t lifting_end_raw = data.lifting_arm_end;
             uint32_t pulse_range_end = SERVO_END_MAX_US - SERVO_END_MIN_US;
-            uint32_t pulse_us_end = SERVO_C_MIN_US + ((uint32_t)lifting_end_raw * pulse_range_end) / 255;
+            uint32_t pulse_us_end = SERVO_END_MIN_US + ((uint32_t)lifting_end_raw * pulse_range_end) / 255;
             ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, servo_duty_from_pulse_us(pulse_us_end));
             ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
             // ? Lifting Arm Control END
@@ -1001,10 +1001,8 @@ void mtr_ctrl_ir(void *args)
         case LINE_FULL:
             line_lost_counter = 0;
             
-            // Start Point & Stop Point detection
             if (bar_detected_flag == 0)
             {
-                // First bar - just pass through
                 mecanum.vx = 0.0f;
                 mecanum.vy = LINE_BASE_SPEED;
                 mecanum.vr = 0.0f;
@@ -1012,10 +1010,8 @@ void mtr_ctrl_ir(void *args)
             }
             else if (bar_detected_flag == 1)
             {
-                // Second bar - stop and switch to manual
                 stopMotors();
 
-                // Switch to Manual Control Mode
                 current_mode = CONTROL_MODE_MANUAL;
                 manual_control_active = true;
 
