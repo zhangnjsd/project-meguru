@@ -889,14 +889,13 @@ void mtr_ctrl_ir(void *args)
     current_mode = CONTROL_MODE_AUTO;
     LineState state;
     
-    // For detecting full bar transitions
     bool was_full = false;
     
-    // Timeout counter for line loss recovery
+    // ? Timeout counter for line loss recovery
     int line_lost_counter = 0;
-    const int LINE_LOST_TIMEOUT = 700;  // 700 * 2ms = 1400ms before stopping
+    const int LINE_LOST_TIMEOUT = 700;  // ! 700 * 2ms = 1400ms before stopping
 
-    // Application State for Start Logic
+    // ? Application State for Start Logic
     typedef enum {
         APP_WAIT_START,
         APP_SEARCHING,
@@ -938,13 +937,13 @@ void mtr_ctrl_ir(void *args)
         switch (state)
         {
         case LINE_NONE:
-            // Line lost - use last known position to try to recover
+            // * Line lost
+            // ? Follow LAST known direction for recovery
             line_lost_counter++;
             if (line_lost_counter < LINE_LOST_TIMEOUT) {
-                // Try to turn towards last known position (use vr for rotation)
                 float recovery_turn = (line_data.last_position < 0) ? -0.5f : 0.5f;
                 mecanum.vx = 0.0f;
-                mecanum.vy = LINE_BASE_SPEED * 0.3f;  // Slow forward
+                mecanum.vy = LINE_BASE_SPEED * 0.3f;
                 mecanum.vr = recovery_turn;
                 mecanum_move((MotorGroup*)&mecanum, 0.6f);
             } else {
@@ -973,7 +972,7 @@ void mtr_ctrl_ir(void *args)
             
             static bool pivot_mode = false;  // Locally rotate mode flag
             
-            // ? Locally rotate mode START
+            // ? Locally rotate mode START (Pivot Mode)
             if (abs_error > PIVOT_THRESHOLD) {
                 pivot_mode = true;
             }
@@ -993,7 +992,7 @@ void mtr_ctrl_ir(void *args)
                 mecanum_move((MotorGroup*)&mecanum, 1.0f);
             }
             break;
-            // ? Locally rotate mode END
+            // ? Locally rotate mode END (Pivot Mode TERMINATE)
             
         case LINE_FULL:
             line_lost_counter = 0;
