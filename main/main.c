@@ -73,11 +73,9 @@
 #define SERVO_B_MIN_US 750 /*!< Minimum pulse width for Lifting Arm B */
 #define SERVO_B_MAX_US 2500 /*!< Maximum pulse width for Lifting Arm B */
 
-// todo: Calibrate these values for your specific servos
 #define SERVO_C_MIN_US 500 /*!< Minimum pulse width for Lifting Arm C */
 #define SERVO_C_MAX_US 2500 /*!< Maximum pulse width for Lifting Arm C */
 
-// todo: Calibrate these values for your specific servos
 #define SERVO_END_MIN_US 500 /*!< Minimum pulse width for Lifting Arm C */
 #define SERVO_END_MAX_US 2500 /*!< Maximum pulse width for Lifting Arm C */
 
@@ -950,7 +948,6 @@ void mtr_ctrl_ir(void *args)
                 mecanum.vr = recovery_turn;
                 mecanum_move((MotorGroup*)&mecanum, 0.6f);
             } else {
-                // Timeout - stop motors
                 stopMotors();
             }
             break;
