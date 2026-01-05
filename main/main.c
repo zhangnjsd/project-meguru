@@ -319,10 +319,10 @@ void app_main(void)
     mcpwm_comparator_config_t mtr_comparator_config = {
         .flags.update_cmp_on_tez = true,
     };
-    // Front Motors (Operator 1)
+    // * Front Motors (Operator 1)
     ESP_ERROR_CHECK(mcpwm_new_comparator(mtr_operator_front, &mtr_comparator_config, &mtr_cmpr_fl));
     ESP_ERROR_CHECK(mcpwm_new_comparator(mtr_operator_front, &mtr_comparator_config, &mtr_cmpr_fr));
-    // Back Motors (Operator 2)
+    // * Back Motors (Operator 2)
     ESP_ERROR_CHECK(mcpwm_new_comparator(mtr_operator_back, &mtr_comparator_config, &mtr_cmpr_bl));
     ESP_ERROR_CHECK(mcpwm_new_comparator(mtr_operator_back, &mtr_comparator_config, &mtr_cmpr_br));
 
@@ -344,6 +344,15 @@ void app_main(void)
     ESP_ERROR_CHECK(mcpwm_new_generator(mtr_operator_back, &mtr_gen_config, &mtr_gen_br));
 
     // ? Set generator actions: High on timer empty, Low on compare match
+    /*
+    ?   High
+    ?   __________
+    ?  |          |
+    ?  |          |_________________
+    ? Low
+    ?  ^          ^                ^
+    ? Empty      CMP             Period
+    */
     ESP_ERROR_CHECK(mcpwm_generator_set_action_on_timer_event(mtr_gen_fl,
                     MCPWM_GEN_TIMER_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, MCPWM_TIMER_EVENT_EMPTY, MCPWM_GEN_ACTION_HIGH)));
     ESP_ERROR_CHECK(mcpwm_generator_set_action_on_compare_event(mtr_gen_fl,
@@ -364,6 +373,7 @@ void app_main(void)
     ESP_ERROR_CHECK(mcpwm_generator_set_action_on_compare_event(mtr_gen_br,
                     MCPWM_GEN_COMPARE_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, mtr_cmpr_br, MCPWM_GEN_ACTION_LOW)));
 
+    // ? Start MCPWM Timer
     ESP_ERROR_CHECK(mcpwm_timer_enable(mtr_timer));
     ESP_ERROR_CHECK(mcpwm_timer_start_stop(mtr_timer, MCPWM_TIMER_START_NO_STOP));
 
@@ -449,7 +459,7 @@ void app_main(void)
     ledc_channel_config(&claw_sw_channel);
 
     // ? BLE Handler START
-    ESP_LOGI(TAG, "Initializing NimBLE Stack");
+    //// ESP_LOGI(TAG, "Initializing NimBLE Stack");
     // * NimBLE initialization
     nimble_init();
 
@@ -458,13 +468,11 @@ void app_main(void)
     // ? BLE Handler END
 
     // * IR Read Thread
-    ESP_LOGI(TAG, "Starting IR Read Task");
-    // Increase stack to avoid overflow from logging and I2C routines
+    //// ESP_LOGI(TAG, "Starting IR Read Task");
     xTaskCreate(ir_read_task, "IR Read Task", 4096, NULL, 2, &ir_task_handle);
 
     // * Motor Control Thread
-    ESP_LOGI(TAG, "Starting Motor Control Task");
-    // Increase stack to accommodate motor control logic and logging
+    //// ESP_LOGI(TAG, "Starting Motor Control Task");
     xTaskCreate(mtr_ctrl_ir, "Motor Control Task", 4096, NULL, 3, NULL);
 }
 
@@ -473,7 +481,7 @@ esp_err_t mtr_spd_setting(MotorGroup* motor) {
     esp_err_t err = ESP_OK;
     uint16_t port_data = 0;
 
-    // Construct Port 0 data (Motor Direction Pins)
+    // * Construct Port 0 data (Motor Direction Pins)
     // FL
     if (motor->FrontL.in1_level) port_data |= motor->FrontL.in1_pin;
     if (motor->FrontL.in2_level) port_data |= motor->FrontL.in2_pin;
@@ -539,7 +547,6 @@ void ir_read_task()
             ESP_LOGE(TAG, "Failed to read state register, error code: 0x%X", err);
         }
         vTaskDelay(pdMS_TO_TICKS(2));  
-        // 2ms interval = 500Hz sampling rate
     }
 }
 
@@ -597,16 +604,14 @@ void ir_read_callback(uint8_t state_buf[0])
     line_data.last_position = line_data.position;
     line_data.sensor_count = sensor_count;
     
-    // Calculate normalized position (-1.0 to +1.0)
     if (sensor_count > 0) {
         line_data.position = weighted_sum / (sensor_count * 4.0f);
+        // * KEEP last state IF NOT any sensor detected
     }
-    // If no sensors, keep last known position (helps with gaps)
     
-    // Detect full bar (start/stop line)
+    // * Detect full bar (start/stop line)
     line_data.full_detected = (current_ir_data.LLL && current_ir_data.RRR);
     
-    // Update state
     if (line_data.full_detected) {
         current_line_state = LINE_FULL;
     } else if (sensor_count > 0) {
