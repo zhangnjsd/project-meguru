@@ -199,7 +199,7 @@ void tablet_data_handler(TabletData data);
 void ir_read_callback(uint8_t state_buf[0]);
 
 // ! IR Module Read Task
-void ir_read_task();
+void ir_read_task(void *pvParameters);
 
 // ? Mecanum Wheel Movement Function
 static void mecanum_move(MotorGroup* motor, float mag);
@@ -521,7 +521,7 @@ esp_err_t mtr_spd_setting(MotorGroup* motor) {
 }
 
 // ! IR Module Read Task
-void ir_read_task()
+void ir_read_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "IR Read Task Started");
     if (ir_dev_handle == NULL)
